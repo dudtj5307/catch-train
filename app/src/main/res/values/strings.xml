@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SRT Watcher</string>
+    <string name="notification_channel_name">SRT Watcher</string>
+    <string name="notification_channel_description">조건에 맞는 SRT 좌석이 발견되면 알립니다.</string>
+    <string name="reserve_alert_channel_name">결제 재촉 알림</string>
+    <string name="reserve_alert_channel_description">[예약하기] 를 누른 뒤 10초마다 다시 알립니다. 좌석이 풀리는 10분까지만 울립니다.</string>
+</resources>

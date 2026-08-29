@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 런처 아이콘 타일. 순검정이면 어두운 배경화면에 묻혀서 한 단계 밝게 둔다. -->
+    <color name="ic_launcher_background">#16191D</color>
+    <!-- Compose 가 그려지기 전 콜드 스타트 구간에 보이는 색. 앱 배경과 같게 둔다. -->
+    <color name="window_background">#0A0B0D</color>
+</resources>

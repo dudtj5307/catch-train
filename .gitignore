@@ -1,0 +1,23 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+
+# 릴리스 서명 (절대 공유·커밋 금지)
+*.jks
+keystore.properties
+
+# 빌드 산출물 배포 폴더 (APK/ZIP)
+dist/
+
+# Kotlin 데몬 세션
+.kotlin/

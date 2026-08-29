@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 단순화한 고속열차 실루엣 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,28c-9,0 -16,4 -16,12v22c0,4 3,7 7,7h18c4,0 7,-3 7,-7V40c0,-8 -7,-12 -16,-12zM44,42h20v10H44z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M43,72l-5,8h6l4,-6zM65,72l5,8h-6l-4,-6z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M46,58a3,3 0 1,0 6,0a3,3 0 1,0 -6,0zM56,58a3,3 0 1,0 6,0a3,3 0 1,0 -6,0z" />
+</vector>
