@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SRT Watcher"
+rootProject.name = "Catch Train"
 include(":app")

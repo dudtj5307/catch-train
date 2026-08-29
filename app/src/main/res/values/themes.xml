@@ -2,9 +2,9 @@
 <resources>
     <!--
       다크 고정. Light 테마를 쓰면 앱이 뜨기 직전 흰 화면이 한 번 번쩍인다.
-      실제 색은 Compose 의 SrtWatcherTheme 이 그리고, 여기는 창 배경만 맞춘다.
+      실제 색은 Compose 의 CatchTrainTheme 이 그리고, 여기는 창 배경만 맞춘다.
     -->
-    <style name="Theme.SrtWatcher" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.CatchTrain" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/window_background</item>
     </style>
 </resources>

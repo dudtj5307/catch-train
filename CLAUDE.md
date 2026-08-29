@@ -1,4 +1,4 @@
-# SRT Watcher — 작업 지침
+# Catch Train — 작업 지침
 
 Android WebView 로 SRT 조회 결과 화면을 감시하다가, 사용자가 체크해 둔 칸이
 열리면 알리고 그 칸의 [예약하기] 를 눌러 주는 앱.
@@ -133,7 +133,7 @@ UI → ViewModel → WatchController → PageHost(=WebView)
 
 ## 코드 지도
 
-`app/src/main/java/com/example/srtwatcher/` — 이름으로 알 수 없는 것만 적는다.
+`app/src/main/java/dev/yslee/catchtrain/` — 이름으로 알 수 없는 것만 적는다.
 
 | 위치 | 역할 |
 |---|---|

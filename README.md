@@ -1,4 +1,4 @@
-# SRT Watcher (Android)
+# Catch Train (Android)
 
 Android WebView 기반 SRT 좌석 감시 앱. 사용자가 SRT 사이트에서 직접 조회한 결과 표에서
 **원하는 칸을 체크해 두면**, 그 칸이 열릴 때 알리고 **그 칸의 [예약하기] 버튼까지** 눌러 준다.

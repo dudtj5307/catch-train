@@ -9,12 +9,12 @@
 
 ## 서명 키
 
-`applicationId` 는 `dev.yslee.srtwatcher`. release 빌드는 루트의 `keystore.properties` 를
+`applicationId` 는 `dev.yslee.catchtrain`. release 빌드는 루트의 `keystore.properties` 를
 읽어 서명한다. 이 파일이 없으면 **서명 없는 APK** 가 나오고(경고 출력) 기기에 설치되지 않는다.
 
 | 파일 | 역할 |
 |---|---|
-| `srtwatcher-release.jks` | 서명 키 (PKCS12, RSA 2048, 유효기간 10000일) |
+| `catchtrain-release.jks` | 서명 키 (PKCS12, RSA 4096, 유효기간 10950일 = 30년) |
 | `keystore.properties` | 위 파일 경로와 비밀번호 |
 | `keystore.properties.example` | 다른 환경에서 채워 쓰는 템플릿 |
 
@@ -22,10 +22,20 @@
 > 다른 키로 서명한 APK 는 기존 앱 위에 설치되지 않고, 사용자가 지우고 다시 깔아야 한다.
 > 저장소 밖(비밀번호 관리자, 외장 백업 등)에 따로 보관할 것. 둘 다 `.gitignore` 에 있다.
 
+### 구 SRT Watcher 키 (2026-08-29 폐기)
+
+`srtwatcher-release.jks` / alias `srtwatcher` 는 더 이상 쓰지 않는다.
+KTX 전환에서 `applicationId` 가 `dev.yslee.srtwatcher` → `dev.yslee.catchtrain` 으로
+바뀌었고, **applicationId 가 다르면 서명 키와 무관하게 별개 앱**이라 한 기기에 둘 다 깔린다
+(구 SRT Watcher 를 남겨 두기 위한 의도된 선택).
+
+파일은 지우지 않고 저장소 루트에 그대로 뒀다. 구 APK 의 업데이트를 낼 일이 생기면
+그때만 쓴다. 그럴 계획이 없으면 삭제해도 된다.
+
 키를 새로 만들어야 하면:
 
 ```bash
-keytool -genkeypair -v -keystore srtwatcher-release.jks -storetype PKCS12 -keyalg RSA -keysize 2048 -validity 10000 -alias srtwatcher
+keytool -genkeypair -v -keystore catchtrain-release.jks -storetype PKCS12 -keyalg RSA -keysize 4096 -validity 10950 -alias catchtrain
 ```
 
 그 뒤 `keystore.properties.example` 을 `keystore.properties` 로 복사해 값을 채운다.
@@ -47,7 +57,7 @@ keytool -genkeypair -v -keystore srtwatcher-release.jks -storetype PKCS12 -keyal
 apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
 ```
 
-배포용 사본은 버전이 드러나는 이름으로 `dist/` 에 둔다: `dist/SRT-Watcher-0.1.0.apk`
+배포용 사본은 버전이 드러나는 이름으로 `dist/` 에 둔다: `dist/Catch-Train-0.2.0.apk`
 
 ## 새 버전을 낼 때
 
