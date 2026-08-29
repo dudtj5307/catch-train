@@ -23,6 +23,7 @@ SRT 사이트에서 사용자가 직접 조회
 
 | 문서 | 내용 | 언제 읽나 |
 |---|---|---|
+| [`docs/KTX-MIGRATION.md`](docs/KTX-MIGRATION.md) | **★ 지금 진행 중인 일.** 어디까지 했고 뭐가 남았나 | **작업을 시작할 때 먼저** |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | 설계 규칙 + 실측 메모. **코드 KDoc 이 `§번호` 로 참조한다** | 동작을 바꾸기 전 |
 | [`docs/RELEASE.md`](docs/RELEASE.md) | 서명 키 / 버전 올리기 / APK 배포 | 배포할 때만 |
 | [`docs/HISTORY.md`](docs/HISTORY.md) | 원설계 의도, 폐기된 모델, 로드맵 | 거의 안 읽어도 된다 |
