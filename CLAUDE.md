@@ -104,8 +104,15 @@ UI → ViewModel → WatchController → PageHost(=WebView)
 
 ## 이 저장소에서 일할 때
 
-- **git 이 없다.** 세션 밖에서 파일이 바뀌어 있는 경우가 잦으므로,
-  덮어쓰기 전에 **반드시 다시 읽는다.** (실제로 코드가 날아간 적 있다)
+- **git 이 있다.** origin = `https://github.com/dudtj5307/catch-train.git`.
+  `main` = 통합 브랜치, `ktx` = KTX(코레일) 전환 작업 브랜치.
+  전환이 끝나면 `main` 에 머지하고 `ktx` 는 지운다.
+  SRT 사이트 대응 마지막 버전은 태그 **`v0.1.1-srt`** 에 있다 (`git show v0.1.1-srt:<경로>`).
+  SRT 는 폐지되었으므로 **SRT 코드를 살아있는 브랜치로 유지하지 않는다.** 태그면 충분하다.
+- `keystore.properties` · `*.jks` · `dist/` 는 `.gitignore` 에 있다.
+  **절대 커밋하지 말 것** — 실제 서명 비밀번호가 평문으로 들어 있다.
+- 세션 밖에서 파일이 바뀌어 있는 경우가 잦으므로, 덮어쓰기 전에 **반드시 다시 읽는다.**
+  (git 이전에 실제로 코드가 날아간 적 있다)
 - 툴체인은 로컬에 다 있다. `--offline` 로 컴파일·단위테스트·debug APK 빌드가 전부 된다.
   단 `assembleRelease` 는 `lintVital` 이 의존성을 받아와야 해서 `--offline` 이면 실패한다.
 - `WatchControllerTest` 에서 **`advanceUntilIdle()` 을 쓰지 않는다.**
