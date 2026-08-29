@@ -73,7 +73,7 @@ class NotificationHelper(private val context: Context) : MatchNotifier {
         val train = match.train
         // 역 이름은 파서가 읽어내지 못할 수 있다. 그때는 열차 번호로 대신한다.
         val route = if (train.departureStation.isBlank() && train.arrivalStation.isBlank()) {
-            train.trainNumber.ifBlank { "SRT" }
+            train.trainNumber.ifBlank { "열차" }
         } else {
             "${train.departureStation} → ${train.arrivalStation}"
         }
@@ -94,7 +94,7 @@ class NotificationHelper(private val context: Context) : MatchNotifier {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_train)
-            .setContentTitle("🚄 SRT 좌석 발견")
+            .setContentTitle("🚄 좌석 발견")
             .setContentText("$route  ${train.departureTime} ${match.seatClass.label}")
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -130,10 +130,10 @@ class NotificationHelper(private val context: Context) : MatchNotifier {
                 append(train.summary())
                 append("\n")
                 append(match.seatClass.label)
-                append(" · [예약하기] 누른 지 ")
+                append(" · [예매] 누른 지 ")
                 append(elapsed)
                 append(" 지남\n")
-                append("SRT 결제 제한 시간이 지나면 좌석이 풀립니다. 지금 결제하세요.")
+                append("결제 제한 시간이 지나면 좌석이 풀립니다. 지금 결제하세요.")
             }
 
             val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)

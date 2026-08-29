@@ -5,7 +5,7 @@ package dev.yslee.catchtrain.parser
  *
  * UI 는 DOM selector 를 알 필요가 없다.
  */
-interface SrtPageParser {
+interface KtxPageParser {
 
     /**
      * @param rawJson WebView.evaluateJavascript 가 돌려준 원본 문자열.

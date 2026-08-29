@@ -6,14 +6,14 @@ import org.json.JSONObject
 import org.json.JSONTokener
 
 /**
- * [SrtPageParser] 기본 구현. (DESIGN.md §15)
+ * [KtxPageParser] 기본 구현. (DESIGN.md §15)
  *
  * WebView.evaluateJavascript 의 결과는 두 가지 형태로 올 수 있다.
  *   1. JS 가 객체를 반환 → 결과가 그대로 JSON 객체 문자열
  *   2. JS 가 JSON.stringify(...) 결과(문자열)를 반환 → 한 번 더 감싸인 JSON 문자열
  * 둘 다 처리한다.
  */
-class SrtParser : SrtPageParser {
+class KtxParser : KtxPageParser {
 
     override fun parse(rawJson: String?): PageSnapshot {
         val raw = rawJson?.trim()

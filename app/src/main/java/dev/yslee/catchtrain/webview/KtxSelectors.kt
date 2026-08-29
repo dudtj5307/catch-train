@@ -42,14 +42,13 @@ object KtxSelectors {
         "div.sub_content.tab-tck_view",
     )
 
-    /** 열차 목록 컨테이너 후보. 앞에서부터 시도한다. */
-    val TRAIN_LIST = listOf(
-        "div.tckWrap ul",
-        "div.tabPage.active ul",
-        "div.tckWrap",
-    )
-
-    /** 목록 안에서 한 편성을 나타내는 항목 */
+    /**
+     * 목록 안에서 한 편성을 나타내는 항목.
+     *
+     * 목록 컨테이너를 따로 두지 않는다. 편성을 찾는 범위는 [SIGNATURE_SCOPES] 이고,
+     * 거기서 못 찾으면 문서 전체에서 찾는다. 컨테이너 selector 를 하나 더 두면
+     * 그것이 어긋났을 때 편성이 통째로 안 보인다.
+     */
     val TRAIN_ROW = listOf(
         "li.tckList",
         "ul > li.tckList",
@@ -95,12 +94,6 @@ object KtxSelectors {
      */
     const val ROUTE_TIME_PATTERN =
         """^\s*(.+?)\s*(?:→|->|~>)\s*(.+?)\s*\(\s*(\d{1,2}:\d{2})\s*~\s*(\d{1,2}:\d{2})\s*\)\s*$"""
-
-    /** 소요시간. `<p class="s_txt">소요시간: 1시간 6분</p>` — 표시용이고 판정에 쓰지 않는다. */
-    val DURATION = listOf(
-        ".data_box .s_txt",
-        ".data_box p",
-    )
 
     // --- 좌석 칸 ------------------------------------------------------------
 
@@ -189,6 +182,30 @@ object KtxSelectors {
     val RESEARCH_TEXT_EXCLUDE = listOf(
         "다음날", "이전날", "예매", "예약", "선택", "취소", "닫기", "로그인", "로그아웃", "결제",
     )
+
+    /**
+     * 조회 조건이 들어 있는 영역. 재조회 버튼 후보의 **가점**에만 쓴다.
+     *
+     * 이 안에 있는 버튼을 먼저 본다는 뜻이고, 밖에 있다고 버리지는 않는다.
+     * 사이트가 바뀌어 이 영역을 못 찾아도 문구 완전일치가 여전히 버튼을 골라낸다.
+     */
+    val SEARCH_FORM_SCOPES = listOf(
+        "div.ticketSrchWrap",
+        "div.selectAreaWrap",
+    )
+
+    /**
+     * 조회 조건의 **출발일**을 읽을 자리. 화면에 되비쳐 주기 위한 표시용이다.
+     *
+     * **아직 실측이 없어 비어 있다.** (§38-8) 코레일은 `<form>` 이 없어서 SRT 처럼
+     * `getElementsByName` 으로 잡을 입력이 없고, 조회 폼의 날짜 입력이 어떤 구조인지
+     * 확인하지 못했다. 추측으로 채우면 엉뚱한 날짜를 화면에 띄우게 되므로 비워 둔다.
+     *
+     * 비어 있으면 파서가 빈 문자열을 돌려주고, UI 는 날짜 없이 구간만 보여준다.
+     * 감시 판정에는 쓰이지 않으므로 비어도 동작에는 아무 영향이 없다.
+     * 실측되면 CSS selector 를 여기 넣기만 하면 된다. (`value` → 텍스트 순으로 읽는다)
+     */
+    val SEARCH_DATE_FIELDS = emptyList<String>()
 
     // --- 예매 1단계 / 2단계 (§38-6) -------------------------------------------
 
@@ -349,7 +366,7 @@ object KtxSelectors {
      * 재조회 결과가 실제로 바뀌었는지 보는 **DOM 서명**의 대상. (§38-5)
      *
      * 코레일은 AJAX 라 화면 전환이 없고 `onPageFinished` 도 오지 않는다.
-     * `SrtWebViewHost.awaitSettled` 는 이 영역의 서명이 바뀌는 것으로 갱신을 감지한다.
+     * `KtxWebViewHost.awaitSettled` 는 이 영역의 서명이 바뀌는 것으로 갱신을 감지한다.
      * 머리말·광고까지 넣으면 좌석과 무관한 변화에 반응하므로 목록만 본다.
      */
     val SIGNATURE_SCOPES = listOf(

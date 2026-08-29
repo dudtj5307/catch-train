@@ -18,7 +18,9 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * ### 왜 필요한가
  *
- * SRT 메인의 출발일 달력은 이렇게 동작한다.
+ * 아래는 **SRT 에서 실측했던 사례**다. 코레일 달력이 같은 방식인지는 확인하지 않았지만,
+ * `opener` 가 끊기면 팝업이 통째로 죽는다는 성질은 `window.open` 을 쓰는 페이지 공통이라
+ * 근거로 그대로 남긴다. SRT 메인의 출발일 달력은 이렇게 동작했다.
  *
  * ```
  * main.do             : selectCalendarInfo() → Common.openWin(...) → window.open(달력URL, ...)
@@ -51,9 +53,9 @@ import kotlinx.coroutines.flow.asStateFlow
  * 팝업이 또 팝업을 여는 경우(결제/본인확인 등)가 있어 스택으로 들고 있는다.
  * 화면에는 항상 맨 위 창만 보인다. [MAX_POPUPS] 를 넘으면 열지 않는다.
  */
-class SrtPopupHost(
+class KtxPopupHost(
     private val parent: WebView,
-    private val createWebView: (Context) -> WebView = { SrtWebViewFactory.create(it) },
+    private val createWebView: (Context) -> WebView = { KtxWebViewFactory.create(it) },
 ) {
 
     /** 화면에 띄울 팝업 창 하나. */
@@ -76,7 +78,7 @@ class SrtPopupHost(
      * 감시 루프가 이 값을 본다. 자동 조회는 WebView 위젯 좌표에 MotionEvent 를
      * 직접 내려보내므로, 팝업 오버레이가 덮여 있어도 뒤쪽 [조회하기] 가 그대로
      * 눌린다. 사용자가 팝업을 보고 있는 동안 조회가 나가면 안 되므로 여기서 막는다.
-     * ([SrtWebViewHost] 의 `isPopupOpen`)
+     * ([KtxWebViewHost] 의 `isPopupOpen`)
      */
     val isOpen: Boolean get() = _popups.value.isNotEmpty()
 
@@ -206,6 +208,6 @@ class SrtPopupHost(
         /** 팝업이 팝업을 여는 경우까지만 본다. 그 이상은 정상적인 흐름이 아니다. */
         const val MAX_POPUPS = 3
 
-        const val DEFAULT_TITLE = "SRT"
+        const val DEFAULT_TITLE = "코레일"
     }
 }

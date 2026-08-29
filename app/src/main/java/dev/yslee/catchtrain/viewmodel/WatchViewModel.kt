@@ -7,7 +7,7 @@ import dev.yslee.catchtrain.domain.SeatClass
 import dev.yslee.catchtrain.domain.TrainKey
 import dev.yslee.catchtrain.domain.WatchSelection
 import dev.yslee.catchtrain.notification.NotificationHelper
-import dev.yslee.catchtrain.parser.SrtParser
+import dev.yslee.catchtrain.parser.KtxParser
 import dev.yslee.catchtrain.storage.AppSettings
 import dev.yslee.catchtrain.storage.SettingsRepository
 import dev.yslee.catchtrain.watcher.ReloadScheduler
@@ -75,7 +75,7 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
         if (controller != null) return
         val created = WatchController(
             host = host,
-            parser = SrtParser(),
+            parser = KtxParser(),
             notifier = notifier,
             logger = logger,
             scope = viewModelScope,
@@ -151,9 +151,9 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 감시를 시작한다. 시작 전에 **로그인 여부를 먼저 확인한다.**
      *
-     * SRT 는 비로그인 상태에서도 조회가 되고 표에 [예약하기] 버튼까지 보인다.
+     * 코레일은 비로그인 상태에서도 조회가 되고 좌석 선택까지 된다. (§38-7)
      * 그래서 로그인하지 않은 채로도 감시가 멀쩡히 돌아가는 것처럼 보이다가,
-     * 정작 좌석이 열려 예약하기를 누르는 순간 로그인 화면으로 튕긴다.
+     * 정작 좌석이 열려 예매를 누르는 순간 로그인 화면으로 튕긴다.
      * 몇 시간을 기다린 그 한 번을 놓치는 자리라, 시작 자체를 막는다.
      *
      * 로그인 여부를 **판단하지 못한 경우에는 막지 않는다.**
@@ -274,6 +274,6 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         const val LOGIN_REQUIRED_MESSAGE =
-            "먼저 SRT에 로그인하세요. 로그인하지 않으면 좌석이 열려도 예약 화면으로 넘어가지 못합니다."
+            "먼저 코레일에 로그인하세요. 로그인하지 않으면 좌석이 열려도 예약 화면으로 넘어가지 못합니다."
     }
 }

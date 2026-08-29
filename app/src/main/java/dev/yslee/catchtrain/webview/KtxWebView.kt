@@ -13,9 +13,9 @@ import android.webkit.WebView
  * 로그인/세션은 사용자가 WebView 안에서 직접 처리하며, 앱은 쿠키를 보관만 한다.
  *
  * [create] 는 메인 WebView 와 팝업 창(자식 WebView) 양쪽에서 쓴다.
- * 팝업도 같은 설정이어야 하는 이유는 [SrtPopupHost] 주석에 적어 두었다.
+ * 팝업도 같은 설정이어야 하는 이유는 [KtxPopupHost] 주석에 적어 두었다.
  */
-object SrtWebViewFactory {
+object KtxWebViewFactory {
 
     fun create(context: Context): WebView = WebView(context).also { configure(it) }
 
@@ -27,7 +27,7 @@ object SrtWebViewFactory {
      * `window.opener` 가 null 이 되고, 팝업이 부모 창을 조작하는 페이지가
      * 통째로 동작하지 않는다. (SRT 운행일자 선택 달력이 정확히 이 경우다)
      *
-     * true 로 두면 모든 팝업이 [SrtPopupHost] 의 `onCreateWindow` 로 들어온다.
+     * true 로 두면 모든 팝업이 [KtxPopupHost] 의 `onCreateWindow` 로 들어온다.
      * 거기서 처리하지 않으면 `window.open()` 은 조용히 실패한다.
      */
     @SuppressLint("SetJavaScriptEnabled")

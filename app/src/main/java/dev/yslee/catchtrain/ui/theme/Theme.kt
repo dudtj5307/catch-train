@@ -63,7 +63,7 @@ private val DarkColors = darkColorScheme(
 /**
  * 앱 테마. 시스템 설정과 무관하게 항상 다크로 고정한다.
  *
- * WebView 안의 SRT 페이지는 흰 배경 그대로 둔다. 강제 다크(algorithmic darkening)는
+ * WebView 안의 코레일 페이지는 흰 배경 그대로 둔다. 강제 다크(algorithmic darkening)는
  * 페이지 레이아웃을 깨뜨릴 수 있어 쓰지 않는다.
  */
 @Composable

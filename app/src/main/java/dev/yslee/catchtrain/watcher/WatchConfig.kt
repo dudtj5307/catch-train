@@ -3,7 +3,7 @@ package dev.yslee.catchtrain.watcher
 /**
  * 감시 루프 동작 파라미터.
  *
- * 페이지 갱신 방식은 설정하지 않는다. 항상 "조회하기" 버튼 클릭만 사용한다.
+ * 페이지 갱신 방식은 설정하지 않는다. 항상 [열차조회] 버튼 클릭만 사용한다.
  * (DESIGN.md §10, dev.yslee.catchtrain.webview.PageOutcome)
  */
 data class WatchConfig(
@@ -13,9 +13,9 @@ data class WatchConfig(
     val maxIntervalMs: Long = ReloadScheduler.DEFAULT_MAX_INTERVAL_MS,
     val notificationEnabled: Boolean = true,
     /**
-     * 조건을 만족하면 그 열차의 [예약하기] 버튼까지 눌러 준다. (DESIGN.md §19)
+     * 조건을 만족하면 그 열차의 좌석 칸을 고르고 [예매] 까지 눌러 준다. (DESIGN.md §19, §38-6)
      *
-     * 누르는 것은 **예약하기 버튼 하나뿐**이다. 좌석 선택도 결제도 하지 않는다.
+     * 누르는 것은 **그 두 번뿐**이다. 좌석 선택도 결제도 하지 않는다.
      * 즉시 예약이 가능한 좌석(AVAILABLE)에만 적용되며, 예약대기는 누르지 않는다.
      */
     val autoReserveEnabled: Boolean = true,
@@ -36,9 +36,9 @@ data class WatchConfig(
      * (조회 버튼을 눌렀는데 결과가 안 읽히는 상황은 대개 재시도로 나아지지 않는다)
      */
     val maxUnknownPages: Int = 2,
-    /** [예약하기] 클릭 후 예약 화면으로 넘어가기를 기다리는 최대 시간 */
+    /** 예매 클릭 후 예약 화면으로 넘어가기를 기다리는 최대 시간 */
     val reserveTimeoutMs: Long = 20_000L,
-    /** [예약하기] 클릭 후 화면 전환 없이 DOM 변경을 기다리는 최대 시간 */
+    /** 예매 클릭 후 화면 전환 없이 DOM 변경을 기다리는 최대 시간 */
     val reserveSettleMs: Long = 6_000L,
     /**
      * 같은 칸에서 "잔여석없음"을 만났을 때 다시 눌러 볼 최대 횟수. (DESIGN.md §19-2)
@@ -53,7 +53,7 @@ data class WatchConfig(
      */
     val maxSoldOutRetries: Int = 3,
     /**
-     * [예약하기] 를 눌러 결제 화면까지 간 뒤, 사용자가 알아챌 때까지 다시 알리는 간격.
+     * 좌석을 잡은 뒤, 사용자가 알아챌 때까지 다시 알리는 간격.
      * (DESIGN.md §19-3)
      *
      * 좌석 발견 알림은 한 번뿐이라 놓치기 쉽다. 결제에는 제한 시간이 있어서
@@ -64,7 +64,7 @@ data class WatchConfig(
     /**
      * 결제 재촉 알림을 이어 가는 최대 시간. (DESIGN.md §19-3)
      *
-     * SRT 는 [예약하기] 로 잡아 둔 좌석을 이 시간 안에 결제하지 않으면 도로 푼다.
+     * 코레일은 [예매] 로 잡아 둔 좌석을 이 시간 안에 결제하지 않으면 도로 푼다.
      * 그 뒤의 재촉은 이미 없는 좌석을 두고 재촉하는 셈이라, 사용자가 끄지 않아도
      * 여기서 스스로 멈춘다.
      *

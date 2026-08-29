@@ -19,7 +19,7 @@ interface MatchNotifier {
     fun notifyMatch(match: SeatMatch, extraCount: Int = 0)
 
     /**
-     * [예약하기] 를 눌러 결제 화면까지 넘어갔는데 사용자가 아직 확인하지 못한 경우의
+     * 좌석을 잡았는데(예매를 눌렀거나 좌석만 골라 뒀는데) 사용자가 아직 확인하지 못한 경우의
      * 재촉 알림. (DESIGN.md §19-3)
      *
      * 좌석 발견 알림([notifyMatch])과 달리 **사용자가 멈출 때까지 되풀이해서** 온다.
@@ -27,7 +27,7 @@ interface MatchNotifier {
      * 잃기 때문이다. 그래서 소리와 진동을 매번 다시 울린다.
      *
      * @param repeatIndex 몇 번째 재촉인지. 1 부터 센다.
-     * @param elapsedMs [예약하기] 를 누른 뒤 흐른 시간
+     * @param elapsedMs 좌석을 잡은 뒤 흐른 시간
      */
     fun notifyReserveReminder(match: SeatMatch, repeatIndex: Int, elapsedMs: Long)
 

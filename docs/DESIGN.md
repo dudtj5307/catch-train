@@ -89,7 +89,7 @@ ReloadScheduler                다음 사이클까지 대기 (범위 안에서 �
        - scrollIntoView 로 화면 안으로 들여놓고
        - visualViewport 기준으로 CSS px -> 위젯 px 환산
        - elementFromPoint 로 그 지점이 정말 그 버튼인지 확인
-  → SrtWebViewHost.tap(x, y)
+  → KtxWebViewHost.tap(x, y)
        MotionEvent(SOURCE_TOUCHSCREEN, TOOL_TYPE_FINGER)
        DOWN → 60~160ms → MOVE(±1px) → UP        (시간·좌표는 매번 조금씩 다르다)
   → buildTapConfirmScript      click 이 버튼까지 닿았는지, isTrusted 였는지 확인
@@ -154,7 +154,7 @@ null 이 되고, 날짜를 눌러도 아무 일도 일어나지 않는다. (그 
 자식 WebView 를 꽂아 줄 때만 유지된다. `shouldOverrideUrlLoading` 으로 URL 만 가로채
 다른 WebView 에 `loadUrl` 하는 방식은 `opener` 가 여전히 null 이라 **똑같이 깨진다.**
 
-`SrtPopupHost` 가 이 창들을 스택으로 들고 있고, 화면에는 맨 위 창만 카드로 띄운다. (§22)
+`KtxPopupHost` 가 이 창들을 스택으로 들고 있고, 화면에는 맨 위 창만 카드로 띄운다. (§22)
 
 **팝업이 열려 있는 동안에는 자동 조회를 하지 않는다.** 조회는 WebView 위젯 좌표에
 MotionEvent 를 내려보내는 방식이라(§10) 오버레이가 덮여 있어도 뒤쪽 [조회하기] 가
@@ -173,7 +173,7 @@ selector 가 틀려도 최대한 버티도록 **2단 전략**을 쓴다.
    `예약하기`/`매진`/`예약대기` 키워드를 찾는다. 좌석 칸은 왼쪽부터
    **특실 → 일반실** 순으로 본다 (실제 표의 열 순서).
 
-파싱이 깨지면 고칠 파일은 `webview/SrtSelectors.kt` 와 `webview/SrtParserScript.kt`
+파싱이 깨지면 고칠 파일은 `webview/KtxSelectors.kt` 와 `webview/KtxParserScript.kt`
 **둘뿐이다.** 확인은 `chrome://inspect` → 앱 WebView → DevTools 로 실제 DOM 을 보고 한다.
 앱 안에서는 `로그 보기` 의 `TRAIN_COUNT` / `DOM_WARNING` / `PAGE_STATUS` 로 빠르게 본다.
 
@@ -185,7 +185,7 @@ selector 가 틀려도 최대한 버티도록 **2단 전략**을 쓴다.
 ## §15. Parser Layer
 
 ```
-WebView → Raw JSON → SrtPageParser → PageSnapshot(페이지 종류 + Train[])
+WebView → Raw JSON → KtxPageParser → PageSnapshot(페이지 종류 + Train[])
 ```
 
 UI 는 selector 를 알 필요가 없다. 원안은 `List<Train>` 반환이었으나 `PageSnapshot` 으로
@@ -207,20 +207,26 @@ UI 는 selector 를 알 필요가 없다. 원안은 `List<Train>` 반환이었�
 `예약대기` 는 **항상 발견으로 보지 않는다.** 즉시 예약이 아니라 성격이 다른 신청이고,
 사용자가 고른 것은 그 칸의 [예약하기] 버튼이다.
 
-### §19-1. 발견 후 [예약하기] 클릭
+### §19-1. 발견 후 예매 클릭
 
-알림을 보낸 **뒤에**, 그 열차의 `예약하기` 버튼까지 눌러 준다. 누르는 방식은 재조회(§10)와
+알림을 보낸 **뒤에**, 그 열차의 예매 버튼까지 눌러 준다. 누르는 방식은 재조회(§10)와
 완전히 같다. 여기까지가 앱의 역할이고 **좌석 선택과 결제는 사용자가 직접 한다.**
 설정에서 끌 수 있고, 끄면 알림까지만 한다.
+
+> **코레일에서는 이 클릭이 두 단계다.** 좌석 칸을 눌러 고르고(1단계), 화면 하단에
+> 나타난 예매 바에서 [예매] 를 누른다(2단계). 두 단계 사이의 확인과, 2단계를 누르지
+> 않고 사람에게 넘기는 경우는 **§38-6 / §38-6-1** 에 있다.
+> 아래 제약은 두 단계 모두에 그대로 적용된다.
 
 잘못된 좌석을 잡는 사고를 막기 위한 제약:
 
 | 규칙 | 이유 |
 |---|---|
-| 탐색 범위는 매칭된 **그 행의 그 좌석 등급 칸 안**으로 제한 | 표 전체에서 찾으면 다른 열차의 버튼을 누를 수 있다 |
-| 행은 위치가 아니라 **행 내용 요약값(rowKey)** 으로 다시 확인 | 분석과 클릭 사이에 표가 갱신되면 위치가 어긋난다 |
-| 좌석 칸을 특정 못 했는데 후보가 둘 이상이면 **누르지 않는다** | 일반실/특실 혼동 방지 |
-| `예약대기` 는 자동으로 누르지 않는다 | 즉시 예약이 아니다 |
+| 탐색 범위는 매칭된 **그 편성의 그 좌석 등급 칸 안**으로 제한 | 목록 전체에서 찾으면 다른 열차의 칸을 누를 수 있다 |
+| 편성은 위치가 아니라 **내용 요약값(rowKey)** 으로 다시 확인 | 분석과 클릭 사이에 목록이 갱신되면 위치가 어긋난다 |
+| 그 위에 **열차 번호**를 한 번 더 대조 | 같은 시각에 다른 편성이 있다 (§38-4) |
+| 좌석 칸을 특정하지 못하면 **누르지 않는다** | 일반실/특실 혼동 방지 |
+| `예약대기` / 매진 칸은 자동으로 누르지 않는다 | 즉시 예약이 아니다 |
 | 같은 (날짜, 열차, 좌석등급)에 **두 번 시도하지 않는다** | 같은 열차를 중복으로 잡지 않는다 |
 
 ### §19-2. [예약하기] 를 눌렀는데 "잔여석없음" 이 뜨는 경우
@@ -263,8 +269,8 @@ UI 는 selector 를 알 필요가 없다. 원안은 `List<Train>` 반환이었�
 때만 실패로 본다. 본문은 `innerText` 로만 읽으므로 `<script>` 안의 안내 문자열에는
 걸리지 않는다.
 
-관련 코드: `SrtSelectors.RESERVE_FAILED_MARKERS`, `SrtParserScript.buildReserveResultScript()`,
-`SrtWebViewHost.dismissReserveResult()`, `WatchController.handleSoldOut()`
+관련 코드: `KtxSelectors.RESERVE_FAILED_MARKERS`, `KtxParserScript.buildReserveResultScript()`,
+`KtxWebViewHost.dismissReserveResult()`, `WatchController.handleSoldOut()`
 
 ### §19-3. 결제 재촉 알림
 
@@ -382,8 +388,9 @@ DataStore Preferences 에 저장하는 것은 **감시 동작뿐**이다:
 몇 시간을 기다린 그 한 번에서 실패하므로, **감시 시작 버튼을 누른 시점에** 한 번
 확인하고 아니면 시작하지 않는다.
 
-판정(`SrtLoginScript`)은 머리말 영역(`.login_wrap` → `.global` → `.header` → ...) 안의
-**링크/버튼만** 본다.
+판정(`KtxLoginScript`)은 머리말 영역(`ul.h_top_right` → `div.header_top` → ...) 안의
+**링크만** 본다. 코레일은 이 자리의 링크가 상태에 따라 통째로 바뀌어서
+(`a.btnGoLogout` / `a.btnGoLogin`) 상태와 1:1 이다. 자세한 것과 함정은 §38-7.
 
 | 결과 | 조건 | 감시 시작 |
 |---|---|---|
@@ -404,7 +411,7 @@ DOM 만 읽으므로 요청이 나가지 않는다 = 차단 위험이 없다.
 
 ## §28. DOM 변경 대응
 
-selector 를 코드 곳곳에 하드코딩하지 않는다. **`SrtSelectors` 한 곳에 모으고**,
+selector 를 코드 곳곳에 하드코딩하지 않는다. **`KtxSelectors` 한 곳에 모으고**,
 사이트가 바뀌면 Parser 계층만 고친다. UI 와 감시 엔진은 selector 를 모른다.
 
 판정이 애매할 때는 막지 말고 통과시킨다 (§27-1 의 `UNKNOWN` 과 같은 이유).
@@ -513,7 +520,7 @@ div.tckWrap > ul > li.tckList.clear          ← 한 편성
   `SCHEDULE_URL_HINTS` / `LOGIN_URL_HINTS` 방식은 버리고 DOM 마커로만 판정한다
 - `onPageFinished` 가 오지 않는다 → 재조회 결과는 항상 `PageOutcome.Updated` 로만 온다
 
-> 재조회 자체는 이미 이 구조를 견딘다. `SrtWebViewHost.awaitSettled` 는 화면 전환이
+> 재조회 자체는 이미 이 구조를 견딘다. `KtxWebViewHost.awaitSettled` 는 화면 전환이
 > 없으면 **DOM 서명(baselineSig) 변화**로 갱신을 감지하고 `Updated` 를 돌려주게 되어 있다.
 > AJAX 는 이미 상정된 경로이므로 여기를 다시 쓸 필요는 없다.
 > 바꿔야 하는 것은 **서명을 뜨는 대상**(SRT 표 → `div.tckWrap`)과 URL 기반 판정뿐이다.
@@ -615,4 +622,9 @@ div.ticket_reserv_wrap > div.ticket_reserv_inner > div.ticket_reserv.clear.oneli
 - 선택 **전**(아무 칸도 안 고른 상태) 하단 예매 바가 DOM 에 아예 없는지, 숨겨져만 있는지.
   두 덤프 모두 이미 선택된 상태라 `ticket_reserv_wrap` 이 항상 존재했다
 - 매진된 칸(`sold_out`)을 눌렀을 때의 반응
+  → 지금은 **누르지 않는다.** 파서가 `AVAILABLE` 인 칸만 1단계 대상으로 삼는다
 - **`dismissReserveResult` 의 뒤로 가기가 SPA 에서 조회 결과 화면으로 돌아가는지** (§38-5)
+  → 지금은 물러난 뒤 목록이 실제로 보이는지 확인하고, 안 보이면 성공으로 치지 않는다
+- **예약 실패 안내의 실제 문구.** `KtxSelectors.RESERVE_FAILED_MARKERS` 는 아직 SRT 값이다
+- **조회 폼의 출발일 입력.** `KtxSelectors.SEARCH_DATE_FIELDS` 를 비워 두었다.
+  화면 상단의 "구간 · 날짜" 요약에서 날짜만 빠진 채로 보인다 (표시용이라 감시에는 영향 없음)

@@ -98,7 +98,8 @@ fun StatusDot(state: WatchState, modifier: Modifier = Modifier) {
 @Composable
 fun WatchState.dotColor(): Color = when (this) {
     WatchState.LOADING, WatchState.ANALYZING, WatchState.WAITING -> StatusColors.Running
-    WatchState.MATCHED, WatchState.RESERVED -> MaterialTheme.colorScheme.primary
+    WatchState.MATCHED, WatchState.RESERVED, WatchState.SEAT_SELECTED ->
+        MaterialTheme.colorScheme.primary
     WatchState.ERROR -> MaterialTheme.colorScheme.error
     WatchState.PAUSED -> StatusColors.Paused
     WatchState.IDLE, WatchState.STOPPED -> StatusColors.Idle

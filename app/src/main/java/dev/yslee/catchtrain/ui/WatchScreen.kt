@@ -106,7 +106,7 @@ fun SelectionSummaryCard(
                 if (selection.isEmpty) {
                     Text(
                         text = "아직 고른 좌석이 없습니다.\n" +
-                            "아래 SRT 화면에서 조회한 뒤 [열차 선택] 에서 고르세요.",
+                            "아래 코레일 화면에서 조회한 뒤 [열차 선택] 에서 고르세요.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -164,7 +164,7 @@ private fun formatSearchDate(raw: String): String? {
     return "%04d.%02d.%02d(%s)".format(date.year, date.monthValue, date.dayOfMonth, day)
 }
 
-/** "18:30 SRT 339  특실" 형태. 출발이 빠른 순으로 정렬한다. */
+/** "07:11 305  특실" 형태. 출발이 빠른 순으로 정렬한다. */
 private fun selectionLines(selection: WatchSelection): List<String> =
     selection.seats
         .sortedWith(
@@ -231,12 +231,13 @@ fun StatusCard(
 /**
  * ★ 열차 선택. 이 앱의 중심 화면이다.
  *
- * 사용자가 SRT 사이트에서 원하는 조건으로 조회를 마치면, [갱신] 로 그 결과를
+ * 사용자가 코레일 사이트에서 원하는 조건으로 조회를 마치면, [갱신] 로 그 결과를
  * 그대로 읽어와 여기에 펼친다. 체크한 칸(= 그 열차의 그 좌석 등급)만 감시하고,
- * 열리면 **그 칸의 [예약하기] 버튼만** 누른다.
+ * 열리면 **그 칸을 고른 뒤 [예매] 까지만** 누른다.
  *
- * 좌석 열의 순서는 사이트와 똑같이 **특실이 왼쪽, 일반실이 오른쪽**이다.
- * 화면과 앱의 좌우가 다르면 잘못된 칸을 고르기 쉽다.
+ * 좌석 열의 순서는 사이트와 똑같이 **일반실이 왼쪽, 특실이 오른쪽**이다. (§38-3)
+ * SRT 와 반대이니 옮겨 적을 때 주의할 것 — 화면과 앱의 좌우가 다르면
+ * 잘못된 칸을 고르기 쉽다.
  *
  * 매진인 칸도 체크할 수 있다. 지금 매진인 좌석이 풀리기를 기다리는 것이
  * 이 앱의 목적이기 때문이다. 반대로 아예 없는 칸("-")은 체크할 수 없다.
@@ -303,8 +304,9 @@ fun TrainSelectPanel(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                SeatColumnLabel(SeatClass.FIRST_CLASS.label)
+                // 코레일과 같은 순서: 일반실이 왼쪽, 특실이 오른쪽. (§38-3)
                 SeatColumnLabel(SeatClass.GENERAL.label)
+                SeatColumnLabel(SeatClass.FIRST_CLASS.label)
             }
             Hairline()
 
@@ -316,7 +318,7 @@ fun TrainSelectPanel(
                 if (trains.isEmpty()) {
                     Text(
                         text = "읽어온 열차가 없습니다.\n" +
-                            "아래 SRT 화면에서 원하는 조건으로 조회한 뒤 [갱신] 를 누르세요.",
+                            "아래 코레일 화면에서 원하는 조건으로 조회한 뒤 [갱신] 를 누르세요.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 12.dp),
@@ -334,7 +336,7 @@ fun TrainSelectPanel(
             if (trains.isNotEmpty()) {
                 Hairline()
                 Text(
-                    text = "체크한 칸의 [예약하기] 버튼만 자동으로 누릅니다. " +
+                    text = "체크한 칸을 고른 뒤 [예매] 까지만 자동으로 누릅니다. " +
                         "예약대기는 성격이 다른 신청이라 누르지 않습니다.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -380,16 +382,16 @@ private fun TrainSelectRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        // 사이트와 같은 순서: 특실이 왼쪽, 일반실이 오른쪽.
-        SeatCheckCell(
-            status = train.firstClassSeat,
-            checked = selection.contains(train, SeatClass.FIRST_CLASS),
-            onToggle = { onToggle(train.key, SeatClass.FIRST_CLASS) },
-        )
+        // 코레일과 같은 순서: 일반실이 왼쪽, 특실이 오른쪽. **SRT 와 반대다.** (§38-3)
         SeatCheckCell(
             status = train.generalSeat,
             checked = selection.contains(train, SeatClass.GENERAL),
             onToggle = { onToggle(train.key, SeatClass.GENERAL) },
+        )
+        SeatCheckCell(
+            status = train.firstClassSeat,
+            checked = selection.contains(train, SeatClass.FIRST_CLASS),
+            onToggle = { onToggle(train.key, SeatClass.FIRST_CLASS) },
         )
     }
 }
@@ -398,7 +400,7 @@ private fun TrainSelectRow(
  * 좌석 한 칸. 체크박스 하나뿐이다.
  *
  * 예전에는 체크박스 아래에 "예약가능 / 매진" 을 함께 적었지만, 지금 상태는
- * 바로 아래 SRT 화면이 이미 보여 주고 있고 줄 높이만 두 배로 먹어서 뺐다.
+ * 바로 아래 코레일 화면이 이미 보여 주고 있고 줄 높이만 두 배로 먹어서 뺐다.
  *
  * 상태가 [SeatStatus.UNKNOWN] 이면 그 열차에 그 등급이 없거나 읽지 못한 것이므로
  * 체크할 수 없다. 잘못 체크해 두면 영영 열리지 않는 칸을 기다리게 된다.
@@ -432,7 +434,7 @@ private fun SeatCheckCell(
 /**
  * 선택한 좌석이 열렸을 때 + 후속 동작. (DESIGN.md §19, §34-5)
  *
- * [reserve] 는 이번에 시도한 자동 [예약하기] 결과다. 성공하면 화면이 예약 단계로
+ * [reserve] 는 이번에 시도한 자동 예매 결과다. 성공하면 화면이 예약 단계로
  * 넘어가 [ReservedCard] 가 대신 뜨므로, 여기서는 실패했을 때만 사유를 알려준다.
  */
 @Composable
@@ -472,7 +474,7 @@ fun MatchedCard(
                 )
             }
             Text(
-                text = "예약은 아래 SRT 화면에서 직접 진행하세요.",
+                text = "예매는 아래 코레일 화면에서 직접 진행하세요.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp),
@@ -484,9 +486,9 @@ fun MatchedCard(
                 Text(
                     text = if (reserve.result == ReserveResult.SOLD_OUT) {
                         // 누르기는 눌렀다. 그사이 남이 먼저 잡았을 뿐이라 오류가 아니다.
-                        "[예약하기] 를 눌렀지만 잔여석이 없었습니다 — 목록으로 돌아가 계속 감시합니다"
+                        "[예매] 를 눌렀지만 잔여석이 없었습니다 — 목록으로 돌아가 계속 감시합니다"
                     } else {
-                        "[예약하기] 자동 클릭 실패 — ${reserve.result.label}"
+                        "자동 예매 ${reserve.stage.label} 단계 실패 — ${reserve.result.label}"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Bold,
@@ -522,10 +524,15 @@ fun MatchedCard(
 }
 
 /**
- * 자동 [예약하기] 까지 눌러서 예약 화면으로 넘어간 상태. (DESIGN.md §34-5)
+ * 자동 예매가 끝난 상태. (DESIGN.md §34-5, §38-6)
  *
- * 여기서부터 SRT 페이지에 대고 앱이 하는 일은 없다. 좌석 선택과 결제는 사용자가
- * 직접 한다. 결제 제한 시간이 있어 서두르라는 안내를 가장 크게 둔다.
+ * 두 가지를 함께 맡는다.
+ *  - **2단계까지 눌렀다** ([ReserveResult.CLICKED]) — 예약 화면으로 넘어가 있다.
+ *  - **좌석만 골라 뒀다** — 하단 바의 [예매] 는 사람이 눌러야 한다. (§38-6-1)
+ *
+ * 어느 쪽이든 여기서부터 코레일 페이지에 대고 앱이 하는 일은 없고,
+ * 사용자가 지금 화면을 봐야 한다는 점도 같다. 결제 제한 시간이 있어
+ * 서두르라는 안내를 가장 크게 둔다.
  *
  * 다만 사용자가 이 화면을 못 보고 있을 수 있으므로, 10초마다 소리와 진동으로
  * 재촉하는 알림이 따로 나간다. 좌석이 풀리는 10분까지만이다.
@@ -544,9 +551,11 @@ fun ReservedCard(
         containerColor = MaterialTheme.colorScheme.primaryContainer,
         borderColor = MaterialTheme.colorScheme.primary,
     ) {
+        // 2단계까지 눌렀는가, 좌석만 골라 뒀는가. 사용자가 할 일이 다르다.
+        val clicked = reserve.result.succeeded
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                text = "🎫 [예약하기] 를 눌렀습니다",
+                text = if (clicked) "🎫 [예매] 를 눌렀습니다" else "🎟 좌석을 골라 뒀습니다",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,
@@ -564,8 +573,14 @@ fun ReservedCard(
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "아래 SRT 화면에서 좌석 선택과 결제를 직접 진행하세요. " +
-                    "결제 제한 시간이 있으니 서두르세요.",
+                text = if (clicked) {
+                    "아래 코레일 화면에서 좌석 선택과 결제를 직접 진행하세요. " +
+                        "결제 제한 시간이 있으니 서두르세요."
+                } else {
+                    // 앱이 일부러 멈춘 자리다. 무엇을 눌러야 하는지만 분명히 알려준다. (§38-6-1)
+                    "아래 코레일 화면 맨 아래의 [예매] 를 직접 눌러 주세요. " +
+                        "(${reserve.result.label})"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )

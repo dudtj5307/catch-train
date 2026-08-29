@@ -26,7 +26,7 @@ data class Train(
         SeatClass.FIRST_CLASS -> firstClassSeat
     }
 
-    /** "SRT 339  수서 → 부산  18:30 → 21:05" */
+    /** "305  동탄 → 김천구미  07:11 → 08:17" */
     fun summary(): String = buildString {
         append(trainNumber)
         append("  ")

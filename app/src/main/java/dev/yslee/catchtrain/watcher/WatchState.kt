@@ -17,12 +17,23 @@ enum class WatchState {
     MATCHED,
 
     /**
-     * 조건에 맞는 좌석을 찾아 [예약하기] 까지 눌렀다.
+     * 조건에 맞는 좌석을 찾아 **예매 2단계까지** 눌렀다. (DESIGN.md §38-6)
      *
-     * 이 시점에서 SRT 페이지는 좌석 선택/결제 화면으로 넘어가 있고, 감시는 멈춘다.
+     * 이 시점에서 페이지는 좌석 선택/결제 화면으로 넘어가 있고, 감시는 멈춘다.
      * 결제는 사용자가 직접 진행한다. (이 앱은 결제 단계를 건드리지 않는다)
      */
     RESERVED,
+
+    /**
+     * **1단계까지만 눌렀다.** 좌석 칸은 골라 뒀고 [예매] 는 사람이 눌러야 한다. (§38-6-1)
+     *
+     * 2단계 버튼이 허용목록에 없거나(`예약대기신청` / `입석+좌석 예매`), 누르기 전
+     * 확인이 어긋난 경우다. 실패가 아니라 **일부러 멈춘 것**이다. (대원칙 3)
+     *
+     * 감시는 여기서 끝난다. 재조회를 한 번 더 하면 골라 둔 선택이 지워지기 때문이다.
+     * 대신 결제 재촉 알림을 울려 사용자가 화면을 보게 만든다.
+     */
+    SEAT_SELECTED,
 
     ERROR,
     PAUSED,
@@ -39,7 +50,7 @@ enum class WatchState {
      * 발견/예약 직후에는 사용자가 곧바로 이어서 처리해야 하기 때문이다.
      */
     val keepsScreenOn: Boolean
-        get() = isRunning || this == MATCHED || this == RESERVED
+        get() = isRunning || this == MATCHED || this == RESERVED || this == SEAT_SELECTED
 
     val label: String
         get() = when (this) {
@@ -48,7 +59,8 @@ enum class WatchState {
             ANALYZING -> "페이지 분석 중"
             WAITING -> "다음 확인 대기"
             MATCHED -> "좌석 발견"
-            RESERVED -> "예약하기 누름"
+            RESERVED -> "예매 누름"
+            SEAT_SELECTED -> "좌석 골라 둠"
             ERROR -> "오류"
             PAUSED -> "일시정지"
             STOPPED -> "중지됨"
@@ -60,6 +72,7 @@ enum class WatchState {
             LOADING, ANALYZING, WAITING -> "🟢"
             MATCHED -> "🎯"
             RESERVED -> "🎫"
+            SEAT_SELECTED -> "🎟"
             ERROR -> "🔴"
             PAUSED -> "🟡"
             IDLE, STOPPED -> "⚪"
@@ -107,7 +120,7 @@ enum class WatchError {
     val guide: String
         get() = when (this) {
             NETWORK_ERROR -> "네트워크 상태를 확인한 뒤 다시 시도하세요."
-            PAGE_LOAD_ERROR -> "SRT 페이지를 불러오지 못했습니다."
+            PAGE_LOAD_ERROR -> "코레일 페이지를 불러오지 못했습니다."
             DOM_PARSE_ERROR -> "페이지 구조를 읽지 못했습니다. 조회 결과 화면인지 확인하세요."
             LOGIN_REQUIRED -> "WebView 에서 직접 로그인한 뒤 다시 시도하세요."
             SESSION_EXPIRED -> "세션이 만료되었습니다. 다시 로그인하세요."
@@ -126,13 +139,40 @@ enum class WatchError {
 }
 
 /**
- * 자동 [예약하기] 클릭의 결과.
+ * 자동 예매가 **어느 단계**에서 끝났는지. (DESIGN.md §38-6)
  *
- * 성공([CLICKED])이란 "예약하기 버튼을 눌렀고 페이지가 반응했다"는 뜻일 뿐,
+ * 코레일 예매는 두 번 누른다. 좌석 칸을 골라 `active` 를 붙이고(1단계), 화면 하단에
+ * 나타난 예매 바에서 [예매] 를 누른다(2단계). 두 단계는 성질이 다르다 —
+ * 1단계는 아직 아무것도 잡지 않은 상태이고, 2단계는 좌석을 잡는 되돌리기 어려운 동작이다.
+ *
+ * 그래서 실패를 볼 때 **어느 단계에서 멈췄는지**를 함께 봐야 한다.
+ * [CONFIRM] 단계의 실패는 "1단계까지는 되어 있다"는 뜻이기도 하다.
+ */
+enum class ReserveStage {
+    /** 좌석 칸 고르기 */
+    SELECT,
+
+    /** 하단 바의 [예매] */
+    CONFIRM,
+    ;
+
+    val label: String
+        get() = when (this) {
+            SELECT -> "좌석 선택"
+            CONFIRM -> "예매"
+        }
+}
+
+/**
+ * 자동 예매 클릭의 결과.
+ *
+ * 성공([CLICKED])이란 "[예매] 버튼을 눌렀고 페이지가 반응했다"는 뜻일 뿐,
  * 예약이 확정되었다는 뜻이 아니다. 좌석 선택/결제는 사용자가 직접 진행한다.
+ *
+ * 어느 단계의 결과인지는 [ReserveAttempt.stage] 가 들고 있다.
  */
 enum class ReserveResult {
-    /** 버튼을 눌렀고 화면이 넘어갔다. */
+    /** 2단계 버튼을 눌렀고 화면이 반응했다. */
     CLICKED,
 
     /** 눌렀지만 화면이 바뀌지 않았다. 좌석이 방금 나갔을 수 있다. */
@@ -144,10 +184,25 @@ enum class ReserveResult {
      */
     SOLD_OUT,
 
-    /** 조건에 맞는 행을 화면에서 다시 찾지 못했다. (표가 바뀌었을 수 있다) */
+    /** 조건에 맞는 편성을 화면에서 다시 찾지 못했다. (목록이 갱신되었을 수 있다) */
     ROW_NOT_FOUND,
 
-    /** 그 행에 [예약하기] 버튼이 없었다. */
+    /** 좌석 칸을 특정하지 못했거나, 그사이 매진/예약대기로 바뀌었다. (1단계) */
+    CELL_NOT_FOUND,
+
+    /** 1단계를 눌렀지만 그 칸에 선택 표시가 붙지 않았다. */
+    SEAT_NOT_SELECTED,
+
+    /**
+     * 2단계 버튼이 **누를 수 있는 문구가 아니었다.** (§38-6-1)
+     * `예약대기신청` / `입석+좌석 예매` 가 여기다. 사람에게 넘긴다.
+     */
+    NOT_ALLOWED,
+
+    /** 누르기 전 확인이 어긋났다. (선택 표시 없음 / 하단 바 등급 불일치) */
+    MISMATCH,
+
+    /** 하단 예매 바나 그 안의 버튼을 찾지 못했다. */
     BUTTON_NOT_FOUND,
 
     /** 버튼은 찾았지만 화면에서 누를 수 없었다. (가려짐 / 화면 밖) */
@@ -165,23 +220,36 @@ enum class ReserveResult {
 
     val label: String
         get() = when (this) {
-            CLICKED -> "예약하기 누름"
+            CLICKED -> "예매 누름"
             NO_CHANGE -> "눌렀지만 화면이 바뀌지 않음"
             SOLD_OUT -> "잔여석 없음 (다른 사람이 먼저 예약)"
-            ROW_NOT_FOUND -> "해당 열차 행을 찾지 못함"
-            BUTTON_NOT_FOUND -> "예약하기 버튼 없음"
-            NOT_TAPPABLE -> "예약하기 버튼을 누를 수 없음"
+            ROW_NOT_FOUND -> "해당 열차를 목록에서 찾지 못함"
+            CELL_NOT_FOUND -> "좌석 칸을 누르지 못함"
+            SEAT_NOT_SELECTED -> "좌석이 선택되지 않음"
+            NOT_ALLOWED -> "예매 버튼이 아니라 누르지 않음"
+            MISMATCH -> "고른 좌석과 화면이 맞지 않아 누르지 않음"
+            BUTTON_NOT_FOUND -> "예매 버튼 없음"
+            NOT_TAPPABLE -> "예매 버튼을 누를 수 없음"
             FAILED -> "페이지 오류"
             SKIPPED -> "시도하지 않음"
         }
 }
 
-/** 어떤 좌석에 대해 [예약하기] 를 눌렀고 어떻게 되었는지. */
+/**
+ * 어떤 좌석에 대해 자동 예매를 어디까지 진행했고 어떻게 되었는지.
+ *
+ * [stage] 가 [ReserveStage.CONFIRM] 이면 **1단계는 성공한 것**이다.
+ * 좌석 칸은 골라져 있으므로, 실패했더라도 사용자가 화면에서 [예매] 만 누르면 된다.
+ */
 data class ReserveAttempt(
     val match: SeatMatch,
     val result: ReserveResult,
+    val stage: ReserveStage = ReserveStage.CONFIRM,
     val detail: String = "",
-)
+) {
+    /** 좌석 칸까지는 골라져 있는가. (2단계에 닿았다는 것은 1단계가 성공했다는 뜻이다) */
+    val seatSelected: Boolean get() = stage == ReserveStage.CONFIRM
+}
 
 /**
  * 감시 상태 스냅샷. UI 는 이 값만 보고 화면을 그린다. (§21)
@@ -202,7 +270,7 @@ data class WatchStatus(
      * 둘 다 화면 표시 전용이다. 감시 판정은 [matches] 만 본다.
      */
     val searchDate: String = "",
-    /** 이번 감시에서 마지막으로 시도한 자동 [예약하기] 결과. 시도한 적이 없으면 null. */
+    /** 이번 감시에서 마지막으로 시도한 자동 예매 결과. 시도한 적이 없으면 null. */
     val reserve: ReserveAttempt? = null,
     /**
      * 결제 재촉 알림이 울리고 있는지. (DESIGN.md §19-3)

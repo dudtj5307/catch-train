@@ -6,11 +6,12 @@ import dev.yslee.catchtrain.domain.SeatSelection
 import dev.yslee.catchtrain.domain.TrainKey
 import dev.yslee.catchtrain.domain.WatchSelection
 import dev.yslee.catchtrain.notification.MatchNotifier
-import dev.yslee.catchtrain.parser.SrtParser
+import dev.yslee.catchtrain.parser.KtxParser
 import dev.yslee.catchtrain.webview.PageHost
 import dev.yslee.catchtrain.webview.PageOutcome
 import dev.yslee.catchtrain.webview.ReserveOutcome
 import dev.yslee.catchtrain.webview.ReserveTarget
+import dev.yslee.catchtrain.webview.SeatSelectOutcome
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
@@ -25,9 +26,16 @@ import java.time.LocalTime
 @OptIn(ExperimentalCoroutinesApi::class)
 class WatchControllerTest {
 
+    /**
+     * 예매가 2단계라서 가짜 호스트도 두 단계를 따로 흉내낸다. (DESIGN.md §38-6)
+     *
+     * [selectOutcome] 이 [SeatSelectOutcome.Selected] 일 때만 2단계로 넘어간다.
+     * 실제 [PageHost] 계약과 같아야 테스트가 의미를 갖는다.
+     */
     private class FakePageHost(
         var json: String,
-        var outcome: PageOutcome = PageOutcome.Finished("https://etk.srail.kr/x"),
+        var outcome: PageOutcome = PageOutcome.Updated("sig 변경"),
+        var selectOutcome: SeatSelectOutcome = SeatSelectOutcome.Selected("active 확인"),
         var reserveOutcome: ReserveOutcome = ReserveOutcome.Clicked("예약 화면"),
     ) : PageHost {
         var requeryCount = 0
@@ -36,11 +44,16 @@ class WatchControllerTest {
         /** 로그인 확인 스크립트가 돌려줄 결과. */
         var loginJson: String = """{"state":"UNKNOWN","detail":"표시 없음"}"""
         var dismissCount = 0
-        var dismissOutcome: PageOutcome = PageOutcome.Finished("https://etk.srail.kr/list")
+        var dismissOutcome: PageOutcome = PageOutcome.Updated("목록 복귀")
         val clickDetails = mutableListOf<String>()
+
+        /** 1단계로 고른 좌석 칸. */
+        val selectTargets = mutableListOf<ReserveTarget>()
+
+        /** 2단계로 누른 [예매]. 1단계가 실패하면 비어 있어야 한다. */
         val reserveTargets = mutableListOf<ReserveTarget>()
 
-        override val currentUrl: String = "https://etk.srail.kr/x"
+        override val currentUrl: String = "https://www.korail.com/ticket/search/list"
 
         override suspend fun loadStartUrl() = Unit
 
@@ -51,21 +64,32 @@ class WatchControllerTest {
         ): PageOutcome {
             requeryCount++
             if (outcome !is PageOutcome.ButtonNotFound) {
-                val detail = "selector #btnSearch [조회하기]"
+                val detail = "selector div.ticketSrchWrap button [열차조회]"
                 clickDetails += detail
                 onClick(detail)
             }
             return outcome
         }
 
-        override suspend fun clickReserve(
+        override suspend fun selectSeat(
+            target: ReserveTarget,
+            timeoutMs: Long,
+            settleTimeoutMs: Long,
+            onClick: (String) -> Unit,
+        ): SeatSelectOutcome {
+            selectTargets += target
+            onClick("1단계 ${target.trainNumber} ${target.seatLabel} 탭")
+            return selectOutcome
+        }
+
+        override suspend fun confirmReserve(
             target: ReserveTarget,
             timeoutMs: Long,
             settleTimeoutMs: Long,
             onClick: (String) -> Unit,
         ): ReserveOutcome {
             reserveTargets += target
-            onClick("${target.trainNumber} ${target.seatLabel} 탭")
+            onClick("2단계 ${target.trainNumber} [예매] 탭")
             return reserveOutcome
         }
 
@@ -113,32 +137,34 @@ class WatchControllerTest {
         }
     }
 
-    private val trainKey = TrainKey("SRT 339", LocalTime.of(18, 30))
+    private val trainKey = TrainKey("305", LocalTime.of(18, 30))
 
-    /** 18:30 SRT 339 의 일반실 한 칸만 감시한다. */
+    /** 18:30 305 의 일반실 한 칸만 감시한다. */
     private val selection = WatchSelection(setOf(SeatSelection(trainKey, SeatClass.GENERAL)))
 
+    /** 칸 순번은 `[0]=일반실, [1]=특실` 이다. (§38-3) */
     private fun json(
         generalStatus: String,
         firstClassStatus: String = "SOLD_OUT",
     ) = """
         {
           "status": "TRAIN_LIST",
-          "url": "https://etk.srail.kr/x",
+          "url": "https://www.korail.com/ticket/search/list",
           "title": "t",
           "trains": [
             {
-              "trainNumber": "SRT 339",
-              "departureStation": "수서",
-              "arrivalStation": "부산",
+              "trainNumber": "305",
+              "trainType": "KTX-산천",
+              "departureStation": "동탄",
+              "arrivalStation": "김천구미",
               "departureTime": "18:30",
-              "arrivalTime": "21:05",
+              "arrivalTime": "19:36",
               "generalSeatStatus": "$generalStatus",
               "firstClassSeatStatus": "$firstClassStatus",
-              "rowKey": "8:abc123",
+              "rowKey": "2:abc123",
               "rowIndex": 0,
-              "generalCellIndex": 5,
-              "firstClassCellIndex": 4
+              "generalCellIndex": 0,
+              "firstClassCellIndex": 1
             }
           ]
         }
@@ -151,7 +177,7 @@ class WatchControllerTest {
         scope: CoroutineScope,
     ) = WatchController(
         host = host,
-        parser = SrtParser(),
+        parser = KtxParser(),
         notifier = notifier,
         logger = logger,
         scope = scope,
@@ -168,7 +194,7 @@ class WatchControllerTest {
 
         assertEquals(WatchState.MATCHED, controller.status.value.state)
         assertEquals(1, notifier.sent.size)
-        assertEquals("SRT 339", notifier.sent.single().train.trainNumber)
+        assertEquals("305", notifier.sent.single().train.trainNumber)
         // 첫 사이클은 재조회 없이 현재 화면을 분석한다.
         assertEquals(0, host.requeryCount)
         assertEquals(1, host.evaluateCount)
@@ -206,10 +232,10 @@ class WatchControllerTest {
         )
         runCurrent()
 
-        val target = host.reserveTargets.single()
+        val target = host.selectTargets.single()
         assertEquals("특실", target.seatLabel)
-        // 사이트 표에서 특실은 일반실보다 왼쪽 칸이다.
-        assertEquals(4, target.cellIndex)
+        // 코레일 목록에서 특실은 일반실보다 **오른쪽** 칸이다. SRT 와 반대다. (§38-3)
+        assertEquals(1, target.cellIndex)
     }
 
     @Test
@@ -289,7 +315,7 @@ class WatchControllerTest {
 
         val clicked = logger.entries.value.filter { it.code == LogCode.RESEARCH_CLICKED }
         assertEquals(host.requeryCount, clicked.size)
-        assertTrue(clicked.first().detail!!.contains("조회하기"))
+        assertTrue(clicked.first().detail!!.contains("열차조회"))
 
         controller.stop()
     }
@@ -328,7 +354,7 @@ class WatchControllerTest {
     @Test
     fun `차단 안내 페이지를 만나면 즉시 중지한다`() = runTest {
         val host = FakePageHost(
-            """{"status":"BLOCKED","url":"https://etk.srail.kr/blocked","trains":[]}""",
+            """{"status":"BLOCKED","url":"https://www.korail.com/ticket/search/list","trains":[]}""",
         )
         val logger = WatchLogger()
         val controller = controllerFor(host, logger = logger, scope = backgroundScope)
@@ -422,7 +448,7 @@ class WatchControllerTest {
     }
 
     /**
-     * SRT 는 비로그인 상태에서도 조회 결과가 그대로 보인다.
+     * 코레일은 비로그인 상태에서도 조회 결과가 그대로 보인다. (§38-7)
      * 그래서 화면이 TRAIN_LIST 여도 로그인 여부는 따로 확인해야 한다.
      */
     @Test
@@ -497,7 +523,7 @@ class WatchControllerTest {
         val trains = controller.scanTrains()
 
         assertEquals(1, trains?.size)
-        assertEquals("SRT 339", trains?.single()?.trainNumber)
+        assertEquals("305", trains?.single()?.trainNumber)
         assertEquals("조회 요청이 나가면 안 된다", 0, host.requeryCount)
         assertEquals(1, controller.status.value.trains.size)
     }
@@ -514,7 +540,7 @@ class WatchControllerTest {
     // ------------------------------------------------------------ 자동 예약 (§19)
 
     @Test
-    fun `선택한 좌석이 열리면 예약하기까지 누르고 감시를 끝낸다`() = runTest {
+    fun `선택한 좌석이 열리면 두 단계를 모두 누르고 감시를 끝낸다`() = runTest {
         val host = FakePageHost(json("AVAILABLE"))
         val notifier = RecordingNotifier()
         val controller = controllerFor(host, notifier, scope = backgroundScope)
@@ -526,15 +552,19 @@ class WatchControllerTest {
         // 알림이 먼저다. 클릭이 실패하더라도 사용자는 알림을 받아야 한다.
         assertEquals(1, notifier.sent.size)
 
-        val target = host.reserveTargets.single()
-        assertEquals("SRT 339", target.trainNumber)
+        val target = host.selectTargets.single()
+        assertEquals("305", target.trainNumber)
         assertEquals("18:30", target.departureTime)
-        // 일반실을 골랐으므로 일반실 칸을 눌러야 한다.
-        assertEquals(5, target.cellIndex)
-        assertEquals("8:abc123", target.rowKey)
+        // 일반실을 골랐으므로 왼쪽(0번) 칸을 눌러야 한다. (§38-3)
+        assertEquals(0, target.cellIndex)
+        assertEquals("2:abc123", target.rowKey)
+
+        // 2단계는 1단계와 **같은 대상**을 그대로 넘겨받아야 한다.
+        assertEquals(target, host.reserveTargets.single())
 
         val attempt = controller.status.value.reserve!!
         assertEquals(ReserveResult.CLICKED, attempt.result)
+        assertEquals(ReserveStage.CONFIRM, attempt.stage)
     }
 
     @Test
@@ -556,16 +586,18 @@ class WatchControllerTest {
         // 예약대기는 즉시 예약이 아니라 대기 신청이다. 알리지도, 누르지도 않는다.
         assertTrue(controller.status.value.state.isRunning)
         assertEquals(0, notifier.sent.size)
-        assertTrue("예약을 시도하면 안 된다", host.reserveTargets.isEmpty())
+        assertTrue("좌석을 고르면 안 된다", host.selectTargets.isEmpty())
+        assertTrue("예매를 누르면 안 된다", host.reserveTargets.isEmpty())
 
         controller.stop()
     }
 
+    /** 1단계에서 멈춘 경우. 아직 아무것도 잡지 않았으므로 "발견" 화면 그대로 둔다. */
     @Test
-    fun `예약하기를 누르지 못해도 알림은 남고 발견 상태를 유지한다`() = runTest {
+    fun `좌석 칸을 고르지 못하면 알림은 남고 발견 상태를 유지한다`() = runTest {
         val host = FakePageHost(
             json = json("AVAILABLE"),
-            reserveOutcome = ReserveOutcome.ButtonNotFound("좌석 칸에 예약하기 버튼 없음"),
+            selectOutcome = SeatSelectOutcome.CellNotFound("그사이 좌석이 닫힘"),
         )
         val notifier = RecordingNotifier()
         val logger = WatchLogger()
@@ -576,17 +608,72 @@ class WatchControllerTest {
 
         assertEquals(WatchState.MATCHED, controller.status.value.state)
         assertEquals(1, notifier.sent.size)
-        assertEquals(ReserveResult.BUTTON_NOT_FOUND, controller.status.value.reserve!!.result)
+        val attempt = controller.status.value.reserve!!
+        assertEquals(ReserveResult.CELL_NOT_FOUND, attempt.result)
+        assertEquals(ReserveStage.SELECT, attempt.stage)
+        assertFalse("좌석은 골라지지 않았다", attempt.seatSelected)
+        // 1단계가 실패했으면 2단계는 시도조차 하지 않는다.
+        assertTrue(host.reserveTargets.isEmpty())
         // 감시 자체가 실패한 것은 아니므로 오류 상태로 만들지 않는다.
         assertEquals(null, controller.status.value.error)
         assertTrue(logger.entries.value.any { it.code == LogCode.RESERVE_FAILED })
+    }
+
+    /**
+     * 2단계 버튼이 `예약대기신청` / `입석+좌석 예매` 인 경우. (§38-6-1)
+     * 누르지 않고 사람에게 넘기되, 좌석은 골라 둔 채로 감시를 끝낸다.
+     */
+    @Test
+    fun `예매 버튼이 아니면 좌석만 골라 두고 사람에게 넘긴다`() = runTest {
+        val host = FakePageHost(
+            json = json("AVAILABLE"),
+            reserveOutcome = ReserveOutcome.NotAllowed("누를 수 있는 문구가 없음 (예약대기신청)"),
+        )
+        val notifier = RecordingNotifier()
+        val logger = WatchLogger()
+        val controller = controllerFor(
+            host,
+            notifier,
+            logger,
+            scope = backgroundScope,
+        )
+
+        controller.start(
+            selection,
+            WatchConfig(
+                autoReserveEnabled = true,
+                stopOnMatch = false,
+                minIntervalMs = 2_000L,
+                maxIntervalMs = 2_000L,
+            ),
+        )
+        runCurrent()
+
+        assertEquals(WatchState.SEAT_SELECTED, controller.status.value.state)
+        val attempt = controller.status.value.reserve!!
+        assertEquals(ReserveResult.NOT_ALLOWED, attempt.result)
+        assertEquals(ReserveStage.CONFIRM, attempt.stage)
+        assertTrue("좌석은 골라져 있다", attempt.seatSelected)
+        assertEquals(null, controller.status.value.error)
+        assertTrue(logger.entries.value.any { it.code == LogCode.RESERVE_HANDOVER })
+        // 지금 화면을 봐야 하는 상태다. 재촉 알림이 울려야 한다. (§19-3)
+        assertTrue(controller.status.value.reserveAlerting)
+
+        // 여기서 재조회를 하면 골라 둔 선택이 지워진다. 감시는 멈춰 있어야 한다.
+        val requeriesSoFar = host.requeryCount
+        advanceTimeBy(10_000L)
+        runCurrent()
+        assertEquals(requeriesSoFar, host.requeryCount)
+
+        controller.stop()
     }
 
     @Test
     fun `같은 좌석에 예약을 두 번 시도하지 않는다`() = runTest {
         val host = FakePageHost(
             json = json("AVAILABLE"),
-            reserveOutcome = ReserveOutcome.NoChange("DOM 변경 없음"),
+            // 1단계에서 막히면 감시는 계속된다. 그래도 같은 칸을 다시 누르지 않아야 한다.
+            selectOutcome = SeatSelectOutcome.NotSelected("active 가 붙지 않음"),
         )
         val controller = controllerFor(host, scope = backgroundScope)
 
@@ -603,7 +690,7 @@ class WatchControllerTest {
         runCurrent()
 
         assertTrue("여러 사이클을 돌아야 한다", host.requeryCount >= 2)
-        assertEquals("예약 시도는 한 번뿐이어야 한다", 1, host.reserveTargets.size)
+        assertEquals("예약 시도는 한 번뿐이어야 한다", 1, host.selectTargets.size)
 
         controller.stop()
     }
@@ -666,6 +753,7 @@ class WatchControllerTest {
 
         assertTrue("여러 사이클을 돌아야 한다", host.requeryCount >= 3)
         assertEquals("제한 횟수만큼만 눌러야 한다", 2, host.reserveTargets.size)
+        assertEquals("1단계도 그만큼만", 2, host.selectTargets.size)
 
         controller.stop()
     }

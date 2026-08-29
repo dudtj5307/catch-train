@@ -62,7 +62,7 @@ import dev.yslee.catchtrain.ui.theme.BrandTitle
 import dev.yslee.catchtrain.ui.theme.MonoUrl
 import dev.yslee.catchtrain.viewmodel.WatchViewModel
 import dev.yslee.catchtrain.watcher.WatchState
-import dev.yslee.catchtrain.webview.SrtPopupHost
+import dev.yslee.catchtrain.webview.KtxPopupHost
 import kotlinx.coroutines.delay
 
 /**
@@ -71,7 +71,7 @@ import kotlinx.coroutines.delay
  * 구조(위 → 아래):
  *   헤더           ← 한 줄로 압축. [● 상태 · 간격] + [펼치기] + [설정]
  *   (펼침) 상세    ← 주소 / 조건 요약 / 감시 상태
- *   SRT WebView   ← 감시 중 주기적으로 [조회하기] 가 눌린다
+ *   코레일 WebView ← 감시 중 주기적으로 [열차조회] 가 눌린다
  *   하단 컨트롤    ← 제스처 바에 가리지 않도록 아래 여백 확보
  *
  * 설정 화면은 오버레이 대신 화면 교체로 띄운다. WebView 는 Activity 가 소유하므로
@@ -85,7 +85,7 @@ fun MainScreen(
     isPageLoading: Boolean,
     pageUrl: String?,
     onReloadStartPage: () -> Unit,
-    popup: SrtPopupHost.PopupWindow?,
+    popup: KtxPopupHost.PopupWindow?,
     onClosePopup: () -> Unit,
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -209,7 +209,7 @@ fun MainScreen(
                     }
                 }
 
-                // 3) 좌석 발견 / 예약하기 누름 카드는 접힌 상태에서도 항상 보여준다.
+                // 3) 좌석 발견 / 예매 카드는 접힌 상태에서도 항상 보여준다.
                 //    이 앱이 내놓는 결과물이라 패널에 가려지면 안 된다.
                 val reserve = status.reserve
                 if (status.state == WatchState.MATCHED && status.matches.isNotEmpty()) {
@@ -221,7 +221,12 @@ fun MainScreen(
                             onStop = viewModel::stopWatching,
                         )
                     }
-                } else if (status.state == WatchState.RESERVED && reserve != null) {
+                } else if (
+                    // 2단계까지 눌렀거나(RESERVED), 좌석만 골라 두고 사람에게 넘겼거나(SEAT_SELECTED).
+                    // 둘 다 "지금 화면을 봐야 하는" 상태라 같은 카드가 맡는다. (§38-6-1)
+                    (status.state == WatchState.RESERVED ||
+                        status.state == WatchState.SEAT_SELECTED) && reserve != null
+                ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                         ReservedCard(
                             reserve = reserve,
@@ -235,7 +240,7 @@ fun MainScreen(
                 Spacer(Modifier.height(8.dp))
                 Hairline()
 
-                // 4) WebView. SRT 페이지는 흰 배경 그대로 둔다.
+                // 4) WebView. 코레일 페이지는 흰 배경 그대로 둔다.
                 AndroidView(
                     factory = {
                         // 이전 화면에 붙어 있던 경우 부모에서 떼어낸다.
@@ -248,7 +253,7 @@ fun MainScreen(
                 )
             }
 
-            // 열차 선택 / 로그 창. 흐름 배치로 두면 SRT 화면을 아래로 밀어내므로,
+            // 열차 선택 / 로그 창. 흐름 배치로 두면 코레일 화면을 아래로 밀어내므로,
             // 화면 아래(= 조작 버튼 바로 위)에 붙여 띄우고 WebView 위에 얹는다.
             // 손이 닿는 곳에서 열리고, 뒤쪽 화면 위치가 흔들리지 않는다.
             if (showTrains || showLogs) {
@@ -288,14 +293,14 @@ fun MainScreen(
 /**
  * `window.open()` 으로 열린 창을 화면 가운데 띄운다. (DESIGN.md §12, §22)
  *
- * WebView 자체는 [SrtPopupHost] 가 만들어 `opener` 연결까지 끝낸 것을 그대로 붙인다.
+ * WebView 자체는 [KtxPopupHost] 가 만들어 `opener` 연결까지 끝낸 것을 그대로 붙인다.
  * 여기서 새로 만들거나 URL 만 다시 로드하면 `opener` 가 끊겨 날짜 선택이 동작하지 않는다.
  *
  * 바깥 스크림을 누르면 닫힌다. 뒤로가기는 [MainScreen] 이 받는다.
  */
 @Composable
 private fun PopupOverlay(
-    popup: SrtPopupHost.PopupWindow,
+    popup: KtxPopupHost.PopupWindow,
     onClose: () -> Unit,
 ) {
     Box(
@@ -362,12 +367,12 @@ private fun PopupOverlay(
  * 화면 맨 위 헤더. (DESIGN.md §22)
  *
  * 접힘 : ● 다음 확인 대기 · 1.0~3.0초            [v] [설정]
- * 펼침 : 위 한 줄 + SRT WATCHER / 현재 주소
+ * 펼침 : 위 한 줄 + CATCH TRAIN / 현재 주소
  *
  * 예전에 패널 아래에 따로 있던 [패널 접기/펼치기] 버튼을 여기로 흡수했다.
  * 여닫는 컨트롤이 한 곳에만 있어야 헤더 높이가 예측 가능하다.
  *
- * [SRT 홈] 버튼이 있던 자리는 [설정] 이 가져갔다. 시작 페이지로 돌아가는 기능은
+ * [코레일 홈] 버튼이 있던 자리는 [설정] 이 가져갔다. 시작 페이지로 돌아가는 기능은
  * 설정 화면의 "페이지" 섹션으로 옮겼다.
  */
 @Composable

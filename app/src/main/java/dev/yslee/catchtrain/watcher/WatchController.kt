@@ -11,15 +11,16 @@ import dev.yslee.catchtrain.notification.MatchNotifier
 import dev.yslee.catchtrain.parser.DomParseException
 import dev.yslee.catchtrain.parser.PageSnapshot
 import dev.yslee.catchtrain.parser.PageStatus
-import dev.yslee.catchtrain.parser.SrtPageParser
+import dev.yslee.catchtrain.parser.KtxPageParser
 import dev.yslee.catchtrain.webview.LoginCheck
 import dev.yslee.catchtrain.webview.PageHost
 import dev.yslee.catchtrain.webview.PageOutcome
 import dev.yslee.catchtrain.webview.ReserveOutcome
 import dev.yslee.catchtrain.webview.ReserveTarget
-import dev.yslee.catchtrain.webview.SrtLoginParser
-import dev.yslee.catchtrain.webview.SrtLoginScript
-import dev.yslee.catchtrain.webview.SrtParserScript
+import dev.yslee.catchtrain.webview.SeatSelectOutcome
+import dev.yslee.catchtrain.webview.KtxLoginParser
+import dev.yslee.catchtrain.webview.KtxLoginScript
+import dev.yslee.catchtrain.webview.KtxParserScript
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -36,20 +37,21 @@ import kotlinx.coroutines.launch
  *
  * 핵심 원칙
  *  - WebView 는 [PageHost] 뒤에 숨어 있고, 감시 로직은 전부 여기에 있다. (§34-1)
- *  - DOM 분석([SrtPageParser])과 선택 판정([SelectionEngine])은 서로 분리되어 있다. (§34-2)
+ *  - DOM 분석([KtxPageParser])과 선택 판정([SelectionEngine])은 서로 분리되어 있다. (§34-2)
  *  - 재조회 주기는 [ReloadScheduler] 로 Native 에서 관리한다. (§34-3)
  *  - 선택한 좌석이 열리면 알림을 보내고 감시를 멈춘다. (§34-4)
- *  - 자동 예약이 켜져 있으면 알림을 보낸 **뒤에** [예약하기] 버튼까지 누른다. (§19)
- *    누르는 것은 예약하기 하나뿐이고, 좌석 선택과 결제는 사용자가 직접 한다.
+ *  - 자동 예약이 켜져 있으면 알림을 보낸 **뒤에** 예매 버튼까지 누른다. (§19, §38-6)
+ *    코레일 예매는 **두 단계**다 — 좌석 칸을 고르고(1단계), 하단 바의 [예매] 를 누른다(2단계).
+ *    거기까지가 끝이고, 좌석 선택과 결제는 사용자가 직접 한다.
  *
  * 감시 대상은 **사용자가 [열차 선택] 목록에서 체크한 칸**([WatchSelection])이다.
  * 구간/날짜/시간 조건은 앱이 들고 있지 않다. 사용자가 사이트에서 직접 조회한
- * 결과를 그대로 쓰고, 앱은 그 표의 어느 칸을 볼지만 안다.
+ * 결과를 그대로 쓰고, 앱은 그 목록의 어느 칸을 볼지만 안다.
  *
  * 한 사이클:
- *   조회하기 버튼 탭 → 정착 대기 → DOM 분석 → 선택 판정 → (알림) → (예약하기 탭) → 대기 → 다시 탭
+ *   조회 버튼 탭 → 정착 대기 → DOM 분석 → 선택 판정 → (알림) → (좌석 탭 → 예매 탭) → 대기 → 다시 탭
  *
- * 페이지 갱신은 언제나 화면에 보이는 "조회하기" 버튼을 **직접 누르는 것**이다.
+ * 페이지 갱신은 언제나 화면에 보이는 [열차조회] 버튼을 **직접 누르는 것**이다.
  * reload 도, 조회 URL 직접 호출도 쓰지 않는다. (그 경로는 차단된다)
  *
  * 감시를 "시작"한 직후 첫 사이클은 재조회 없이 현재 화면을 바로 분석한다.
@@ -58,7 +60,7 @@ import kotlinx.coroutines.launch
  */
 class WatchController(
     private val host: PageHost,
-    private val parser: SrtPageParser,
+    private val parser: KtxPageParser,
     private val notifier: MatchNotifier,
     private val logger: WatchLogger,
     private val scope: CoroutineScope,
@@ -70,15 +72,15 @@ class WatchController(
     private val _status = MutableStateFlow(WatchStatus())
     val status: StateFlow<WatchStatus> = _status.asStateFlow()
 
-    private val parserScript: String by lazy { SrtParserScript.build() }
+    private val parserScript: String by lazy { KtxParserScript.build() }
 
-    private val loginScript: String by lazy { SrtLoginScript.build() }
+    private val loginScript: String by lazy { KtxLoginScript.build() }
 
     /** 이미 알린 (열차, 좌석등급) 조합. (§20) */
     private val notifiedKeys = mutableSetOf<MatchKey>()
 
     /**
-     * 이미 [예약하기] 를 눌러 본 조합.
+     * 이미 예매를 눌러 본 조합.
      *
      * 알림과 달리 좌석이 매진되었다가 다시 나와도 지우지 않는다.
      * 같은 열차에 자동으로 두 번 예약을 거는 일이 없어야 하기 때문이다.
@@ -86,7 +88,7 @@ class WatchController(
     private val reserveAttemptedKeys = mutableSetOf<MatchKey>()
 
     /**
-     * [예약하기] 를 눌렀다가 "잔여석없음"을 만난 횟수. (§19-2)
+     * 2단계를 눌렀다가 "잔여석없음"을 만난 횟수. (§19-2)
      * [WatchConfig.maxSoldOutRetries] 를 넘기면 그 칸은 더 누르지 않는다.
      */
     private val soldOutCounts = mutableMapOf<MatchKey, Int>()
@@ -96,7 +98,7 @@ class WatchController(
     /**
      * 결제 재촉 알림을 되풀이하는 루프. (DESIGN.md §19-3)
      *
-     * 감시 루프([loopJob])와 **일부러 따로 둔다**. [예약하기] 를 누른 뒤 감시 루프는
+     * 감시 루프([loopJob])와 **일부러 따로 둔다**. 예매를 누른 뒤 감시 루프는
      * 끝나지만 재촉은 그때부터 시작되고, 사용자가 앱을 잠깐 벗어나 [pause] 되어도
      * 계속 울려야 하기 때문이다. (그 순간이야말로 알림이 필요한 때다)
      */
@@ -222,7 +224,8 @@ class WatchController(
     // ---------------------------------------------------------- 결제 재촉 알림
 
     /**
-     * [예약하기] 를 눌러 결제 화면으로 넘어간 순간부터, 사용자가 멈출 때까지
+     * 좌석을 잡은 순간부터(2단계까지 눌렀거나 좌석만 골라 둔 채 넘긴 순간부터)
+     * 사용자가 멈출 때까지
      * [WatchConfig.reserveReminderIntervalMs] 마다 소리와 진동을 다시 울린다.
      * (DESIGN.md §19-3)
      *
@@ -233,7 +236,7 @@ class WatchController(
      * 감시 종료 / 알림 끄기 / 계속 감시 / 감시 재시작.
      *
      * 여기에 더해 [WatchConfig.reserveReminderMaxDurationMs] 가 지나면 스스로 멈춘다.
-     * SRT 가 그때 좌석을 도로 풀기 때문에, 그 뒤로는 재촉해 봐야 잡을 표가 없다.
+     * 코레일이 그때 좌석을 도로 풀기 때문에, 그 뒤로는 재촉해 봐야 잡을 표가 없다.
      * 횟수 상한이 아니라 시간 상한인 이유는 좌석이 풀리는 기준이 시간이라서다.
      */
     private fun startReserveReminder(match: SeatMatch, config: WatchConfig) {
@@ -292,10 +295,10 @@ class WatchController(
     // ---------------------------------------------------------------- 목록 읽기
 
     /**
-     * 사이트에 로그인되어 있는지 확인한다. ([SrtLoginScript])
+     * 사이트에 로그인되어 있는지 확인한다. ([KtxLoginScript])
      *
-     * 감시를 시작하기 전에 한 번 부른다. SRT 는 **비로그인 상태에서도 조회가 되고
-     * 표에 [예약하기] 버튼까지 보이기 때문에**, 화면만 보고는 로그인 여부를 알 수 없다.
+     * 감시를 시작하기 전에 한 번 부른다. 코레일은 **비로그인 상태에서도 조회가 되고
+     * 좌석 선택까지 되기 때문에**, 화면만 보고는 로그인 여부를 알 수 없다.
      * 그대로 감시를 시작하면 좌석이 열린 바로 그 순간에 로그인 화면으로 튕긴다.
      *
      * DOM 만 읽으므로 요청이 나가지 않는다. = 차단 위험이 없다.
@@ -303,7 +306,7 @@ class WatchController(
      * 판단하지 못하면 [LoginState.UNKNOWN] 이고, 그때는 막지 않는다.
      */
     suspend fun checkLogin(): LoginCheck {
-        val result = SrtLoginParser.parse(host.evaluate(loginScript))
+        val result = KtxLoginParser.parse(host.evaluate(loginScript))
         logger.log(LogCode.LOGIN_STATE, "${result.state} ${result.detail}")
         return result
     }
@@ -312,7 +315,7 @@ class WatchController(
      * **재조회 없이** 지금 화면에 그려져 있는 열차 목록만 다시 읽는다.
      *
      * 사용자가 사이트에서 조회를 마친 뒤 [열차 선택] 목록을 채우기 위한 통로다.
-     * 조회하기 버튼을 누르지 않으므로 요청이 나가지 않는다. = 차단 위험이 없다.
+     * 조회 버튼을 누르지 않으므로 요청이 나가지 않는다. = 차단 위험이 없다.
      * 그래서 사용자가 몇 번을 눌러도 안전하다.
      *
      * 페이지가 바뀔 때마다 자동으로도 불린다. 그렇게 불린 경우([quiet])에는
@@ -394,7 +397,7 @@ class WatchController(
                 logger.log(LogCode.PAGE_LOAD_START, "현재 화면 분석 (재조회 없음)")
             } else {
                 updateStatus { copy(state = WatchState.LOADING) }
-                logger.log(LogCode.PAGE_LOAD_START, "조회하기 버튼 탭")
+                logger.log(LogCode.PAGE_LOAD_START, "열차조회 버튼 탭")
 
                 val outcome = host.requery(
                     timeoutMs = config.pageTimeoutMs,
@@ -569,8 +572,12 @@ class WatchController(
             //      클릭이 실패해도 사용자는 이미 알림을 받은 상태여야 한다.
             if (result.matched) {
                 when (tryReserve(result.matches, snapshot, config)) {
-                    // 예약 화면으로 넘어갔다. 이 페이지에는 조회하기 버튼이 없으므로 감시를 끝낸다.
+                    // 예약 화면으로 넘어갔다. 이 페이지에는 조회 버튼이 없으므로 감시를 끝낸다.
                     ReserveStep.RESERVED -> return
+
+                    // 좌석은 골라 뒀고 [예매] 는 사람이 누른다. 여기서 재조회를 하면
+                    // 골라 둔 것이 지워지므로 감시를 끝낸다. (§38-6-1)
+                    ReserveStep.SEAT_SELECTED -> return
 
                     // "잔여석없음" 이었다. 목록 화면으로 되돌려 놨으므로 감시를 이어간다.
                     // 좌석이 실제로 열린 것이 아니므로 "발견"으로 치지 않는다.
@@ -586,7 +593,7 @@ class WatchController(
                         fail(
                             WatchError.UNKNOWN_PAGE,
                             "예약 안내 화면에서 조회 결과 화면으로 돌아가지 못했습니다. " +
-                                "SRT 화면에서 직접 다시 조회한 뒤 감시를 시작하세요.",
+                                "코레일 화면에서 직접 다시 조회한 뒤 감시를 시작하세요.",
                         )
                         return
                     }
@@ -628,17 +635,21 @@ class WatchController(
     // ---------------------------------------------------------------- 자동 예약
 
     /**
-     * 사용자가 고른 좌석의 [예약하기] 버튼을 누른다. (DESIGN.md §19)
+     * 사용자가 고른 좌석을 자동으로 예매한다. (DESIGN.md §19, §38-6)
+     *
+     * **두 번 누른다.** 좌석 칸을 골라 선택 표시를 붙이고(1단계), 화면 하단에 나타난
+     * 예매 바의 [예매] 를 누른다(2단계). 두 단계 사이에 확인이 들어간다. (§38-6-1)
      *
      * @return 이번 사이클을 어떻게 이어갈지. ([ReserveStep])
      *
      * 누르지 않는 경우:
      *  - 자동 예약 설정이 꺼져 있다.
      *  - 이미 그 좌석에 시도했다. 같은 열차를 두 번 잡으려 들지 않는다.
-     *  - 화면에서 그 행이나 버튼을 확실히 특정하지 못했다.
+     *  - 화면에서 그 편성이나 칸을 확실히 특정하지 못했다.
+     *  - 2단계 버튼이 [예매] 가 아니다. (`예약대기신청` / `입석+좌석 예매`)
      *
      * 실패해도 그 자리에서 재시도하지 않는다. 알림은 이미 나갔으므로 사용자가 직접
-     * 예약하면 되고, 잘못 누르는 것보다 안 누르는 편이 안전하다.
+     * 예매하면 되고, 잘못 누르는 것보다 안 누르는 편이 안전하다. (대원칙 2, 3)
      * 예외는 "잔여석없음"([ReserveOutcome.SoldOut]) 하나뿐이다. 이때는 화면을
      * 목록으로 되돌리고, 다음 사이클에 좌석이 다시 열려 보이면 한 번 더 눌러 본다.
      * (횟수는 [WatchConfig.maxSoldOutRetries] 로 제한한다)
@@ -664,14 +675,26 @@ class WatchController(
             return recordReserveFailure(
                 candidate,
                 ReserveResult.ROW_NOT_FOUND,
-                "화면에서 그 열차의 행 정보를 읽지 못했습니다",
+                ReserveStage.SELECT,
+                "화면에서 그 열차의 편성 정보를 읽지 못했습니다",
+            )
+        }
+
+        val cellIndex = ref.cellIndexOf(candidate.seatClass)
+        if (cellIndex < 0) {
+            // 등급을 class 로도 위치로도 정하지 못한 칸이다. 어느 칸을 누를지 모르면 누르지 않는다.
+            return recordReserveFailure(
+                candidate,
+                ReserveResult.CELL_NOT_FOUND,
+                ReserveStage.SELECT,
+                "${candidate.seatClass.label} 칸의 위치를 읽지 못했습니다",
             )
         }
 
         val target = ReserveTarget(
             rowKey = ref.rowKey,
             rowIndex = ref.rowIndex,
-            cellIndex = ref.cellIndexOf(candidate.seatClass),
+            cellIndex = cellIndex,
             trainNumber = candidate.train.trainNumber,
             departureTime = candidate.train.departureTime.toString(),
             seatLabel = candidate.seatClass.label,
@@ -679,11 +702,49 @@ class WatchController(
 
         logger.log(
             LogCode.RESERVE_START,
-            "${candidate.describe()} row=${ref.rowIndex} cell=${target.cellIndex}",
+            "${candidate.describe()} row=${ref.rowIndex} cell=$cellIndex",
         )
-        updateStatus { copy(message = "${candidate.seatClass.label} [예약하기] 를 누르는 중…") }
 
-        val outcome = host.clickReserve(
+        // --- 1단계 : 좌석 칸 고르기 ------------------------------------------
+        updateStatus { copy(message = "${candidate.seatClass.label} 좌석을 고르는 중…") }
+
+        val selected = host.selectSeat(
+            target = target,
+            timeoutMs = config.reserveTimeoutMs,
+            settleTimeoutMs = config.reserveSettleMs,
+            onClick = { detail -> logger.log(LogCode.RESERVE_CLICKED, detail) },
+        )
+
+        when (selected) {
+            is SeatSelectOutcome.Selected ->
+                logger.log(LogCode.RESERVE_SEAT_SELECTED, selected.detail)
+
+            // 눌렀는데 골라지지 않았다. 요청이 나갔을 수 있으므로 그 자리에서 다시 누르지 않는다.
+            is SeatSelectOutcome.NotSelected -> return recordReserveFailure(
+                candidate, ReserveResult.SEAT_NOT_SELECTED, ReserveStage.SELECT, selected.detail,
+            )
+
+            is SeatSelectOutcome.RowNotFound -> return recordReserveFailure(
+                candidate, ReserveResult.ROW_NOT_FOUND, ReserveStage.SELECT, selected.detail,
+            )
+
+            is SeatSelectOutcome.CellNotFound -> return recordReserveFailure(
+                candidate, ReserveResult.CELL_NOT_FOUND, ReserveStage.SELECT, selected.detail,
+            )
+
+            is SeatSelectOutcome.NotTappable -> return recordReserveFailure(
+                candidate, ReserveResult.NOT_TAPPABLE, ReserveStage.SELECT, selected.detail,
+            )
+
+            is SeatSelectOutcome.Failed -> return recordReserveFailure(
+                candidate, ReserveResult.FAILED, ReserveStage.SELECT, selected.detail,
+            )
+        }
+
+        // --- 2단계 : 하단 바의 [예매] ----------------------------------------
+        updateStatus { copy(message = "[예매] 를 누르는 중…") }
+
+        val outcome = host.confirmReserve(
             target = target,
             timeoutMs = config.reserveTimeoutMs,
             settleTimeoutMs = config.reserveSettleMs,
@@ -698,9 +759,13 @@ class WatchController(
                         state = WatchState.RESERVED,
                         nextCheckInMs = null,
                         error = null,
-                        reserve = ReserveAttempt(candidate, ReserveResult.CLICKED, outcome.detail),
+                        reserve = ReserveAttempt(
+                            match = candidate,
+                            result = ReserveResult.CLICKED,
+                            detail = outcome.detail,
+                        ),
                         message = "${candidate.train.summary()} ${candidate.seatClass.label} " +
-                            "[예약하기] 를 눌렀습니다. 좌석 선택과 결제는 직접 진행하세요.",
+                            "[예매] 를 눌렀습니다. 좌석 선택과 결제는 직접 진행하세요.",
                     )
                 }
                 // 여기서부터 감시는 끝이고, 남은 일은 사용자가 이 화면을 보게 만드는 것뿐이다.
@@ -710,21 +775,61 @@ class WatchController(
 
             is ReserveOutcome.SoldOut -> handleSoldOut(candidate, config, outcome.detail)
 
-            is ReserveOutcome.NoChange ->
-                recordReserveFailure(candidate, ReserveResult.NO_CHANGE, outcome.detail)
+            // 아래는 전부 **좌석은 골라 둔 채로 멈춘 것**이다. 사람이 이어서 누르면 된다.
+            is ReserveOutcome.NotAllowed ->
+                handOverToUser(candidate, ReserveResult.NOT_ALLOWED, config, outcome.detail)
 
-            is ReserveOutcome.RowNotFound ->
-                recordReserveFailure(candidate, ReserveResult.ROW_NOT_FOUND, outcome.detail)
+            is ReserveOutcome.Mismatch ->
+                handOverToUser(candidate, ReserveResult.MISMATCH, config, outcome.detail)
 
             is ReserveOutcome.ButtonNotFound ->
-                recordReserveFailure(candidate, ReserveResult.BUTTON_NOT_FOUND, outcome.detail)
+                handOverToUser(candidate, ReserveResult.BUTTON_NOT_FOUND, config, outcome.detail)
 
             is ReserveOutcome.NotTappable ->
-                recordReserveFailure(candidate, ReserveResult.NOT_TAPPABLE, outcome.detail)
+                handOverToUser(candidate, ReserveResult.NOT_TAPPABLE, config, outcome.detail)
+
+            is ReserveOutcome.NoChange ->
+                handOverToUser(candidate, ReserveResult.NO_CHANGE, config, outcome.detail)
 
             is ReserveOutcome.Failed ->
-                recordReserveFailure(candidate, ReserveResult.FAILED, outcome.detail)
+                handOverToUser(candidate, ReserveResult.FAILED, config, outcome.detail)
         }
+    }
+
+    /**
+     * 1단계는 되었는데 2단계를 누르지 않은(또는 못 한) 경우. (DESIGN.md §38-6-1)
+     *
+     * 오류가 아니다. 좌석 칸은 화면에서 골라져 있고 하단 바도 떠 있으므로,
+     * 사용자가 [예매] 만 누르면 된다. 그래서 **감시를 여기서 끝낸다** —
+     * 다음 사이클에 [열차조회] 를 누르면 골라 둔 선택이 지워지기 때문이다.
+     *
+     * 대신 결제 재촉 알림을 울린다. 사용자가 화면을 보고 있지 않을 수 있고,
+     * 지금이야말로 봐야 하는 순간이다. (§19-3)
+     */
+    private fun handOverToUser(
+        match: SeatMatch,
+        result: ReserveResult,
+        config: WatchConfig,
+        detail: String,
+    ): ReserveStep {
+        logger.log(LogCode.RESERVE_HANDOVER, "${result.name} $detail")
+        updateStatus {
+            copy(
+                state = WatchState.SEAT_SELECTED,
+                nextCheckInMs = null,
+                error = null,
+                reserve = ReserveAttempt(
+                    match = match,
+                    result = result,
+                    stage = ReserveStage.CONFIRM,
+                    detail = detail,
+                ),
+                message = "${match.train.summary()} ${match.seatClass.label} 좌석을 골라 뒀습니다. " +
+                    "화면 아래 [예매] 를 직접 눌러 주세요. (${result.label})",
+            )
+        }
+        startReserveReminder(match, config)
+        return ReserveStep.SEAT_SELECTED
     }
 
     /**
@@ -762,7 +867,12 @@ class WatchController(
             copy(
                 state = WatchState.WAITING,
                 error = null,
-                reserve = ReserveAttempt(match, ReserveResult.SOLD_OUT, detail),
+                reserve = ReserveAttempt(
+                    match = match,
+                    result = ReserveResult.SOLD_OUT,
+                    stage = ReserveStage.CONFIRM,
+                    detail = detail,
+                ),
                 message = "${match.train.summary()} ${match.seatClass.label} — " +
                     "누르는 사이에 좌석이 나갔습니다. " +
                     if (retryable) "목록으로 돌아가 계속 감시합니다." else "이 칸은 더 누르지 않고 알림만 보냅니다.",
@@ -790,21 +900,25 @@ class WatchController(
     }
 
     /**
-     * 예약 클릭 실패를 기록한다. 감시 상태는 오류로 바꾸지 않는다.
+     * **1단계** 실패를 기록한다. 감시 상태는 오류로 바꾸지 않는다.
      * 좌석을 찾은 것은 사실이고 알림도 나갔으므로, "발견" 화면에 실패 사유만 덧붙인다.
+     *
+     * 2단계에서 멈춘 경우는 여기가 아니라 [handOverToUser] 로 간다.
+     * 그쪽은 **좌석이 골라진 상태**라 사용자가 할 일이 다르기 때문이다.
      *
      * @return 항상 [ReserveStep.NONE]. [tryReserve] 의 반환값으로 그대로 쓰기 위한 것이다.
      */
     private fun recordReserveFailure(
         match: SeatMatch,
         result: ReserveResult,
+        stage: ReserveStage,
         detail: String,
     ): ReserveStep {
-        logger.log(LogCode.RESERVE_FAILED, "${result.name} $detail")
+        logger.log(LogCode.RESERVE_FAILED, "${stage.name} ${result.name} $detail")
         updateStatus {
             copy(
-                reserve = ReserveAttempt(match, result, detail),
-                message = "${result.label} · 아래 SRT 화면에서 직접 예약하세요.",
+                reserve = ReserveAttempt(match, result, stage, detail),
+                message = "${result.label} · 아래 화면에서 직접 예매하세요.",
             )
         }
         return ReserveStep.NONE
@@ -853,8 +967,15 @@ class WatchController(
         /** 누르지 않았거나 눌렀지만 화면이 그대로다. 평소대로 이어간다. */
         NONE,
 
-        /** 예약 화면으로 넘어갔다. 감시를 끝낸다. */
+        /** 2단계까지 눌러 예약 화면으로 넘어갔다. 감시를 끝낸다. */
         RESERVED,
+
+        /**
+         * 1단계까지만 눌렀고 2단계는 사람에게 넘겼다. 감시를 끝낸다. (§38-6-1)
+         *
+         * 이어서 재조회를 하면 **골라 둔 좌석 선택이 지워진다.** 그래서 멈춘다.
+         */
+        SEAT_SELECTED,
 
         /** "잔여석없음" 이어서 목록 화면으로 되돌렸다. 다음 사이클부터 다시 감시한다. */
         RETURNED,

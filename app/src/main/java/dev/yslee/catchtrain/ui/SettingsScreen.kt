@@ -56,7 +56,7 @@ import dev.yslee.catchtrain.watcher.ReloadScheduler
  * 설정 화면. (DESIGN.md §21, §23)
  *
  * **감시 조건은 여기에 없다.** 구간/날짜/시간/좌석 등급을 앱에 입력하던 화면은
- * 없앴다. 조회는 사용자가 SRT 사이트에서 직접 하고, 감시 대상은 메인 화면의
+ * 없앴다. 조회는 사용자가 코레일 사이트에서 직접 하고, 감시 대상은 메인 화면의
  * [열차 선택] 목록에서 체크한 칸이다. 같은 조건을 두 군데에 입력하면
  * 어긋났을 때 원인을 찾기 어렵다.
  *
@@ -126,8 +126,8 @@ fun SettingsScreen(
                         onCheckedChange = viewModel::setNotificationEnabled,
                     )
                     SwitchRow(
-                        label = "[예약하기] 자동 클릭",
-                        description = "좌석이 열리면 그 칸의 예약하기 버튼까지 눌러 줍니다. " +
+                        label = "[예매] 자동 클릭",
+                        description = "좌석이 열리면 그 칸을 고르고 [예매] 까지 눌러 줍니다. " +
                             "좌석 선택과 결제는 직접 진행합니다",
                         checked = settings.autoReserveEnabled,
                         onCheckedChange = viewModel::setAutoReserveEnabled,
@@ -140,12 +140,12 @@ fun SettingsScreen(
                     )
                 }
 
-                // 헤더에 있던 [SRT 홈] 이 [설정] 으로 바뀌면서 이 자리로 옮겨왔다.
+                // 헤더에 있던 [코레일 홈] 이 [설정] 으로 바뀌면서 이 자리로 옮겨왔다.
                 // 로그인이나 세션이 꼬였을 때 시작 페이지로 되돌아오는 통로다.
                 SectionLabel("페이지")
                 PanelCard {
                     SettingRow(
-                        label = "SRT 홈으로 이동",
+                        label = "코레일 홈으로 이동",
                         value = "",
                         onClick = onGoHome,
                     )
@@ -153,12 +153,12 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(20.dp))
                 Text(
-                    text = "· 조회 조건(구간/날짜/시간)은 아래 SRT 화면에서 직접 지정합니다. " +
+                    text = "· 조회 조건(구간/날짜/시간)은 아래 코레일 화면에서 직접 지정합니다. " +
                         "조회를 마친 뒤 [열차 선택] 에서 [갱신] 를 누르면 목록이 채워집니다.\n" +
-                        "· 앱은 체크한 칸의 [예약하기] 버튼만 누릅니다. " +
+                        "· 앱은 체크한 칸을 고르고 [예매] 까지만 누릅니다. " +
                         "좌석 선택과 결제는 사용자가 직접 진행합니다.\n" +
-                        "· 갱신은 페이지의 [조회하기] 버튼을 눌러서만 합니다. " +
-                        "조회하기 버튼이 보이는 결과 화면에서 감시를 시작하세요.\n" +
+                        "· 갱신은 페이지의 [열차조회] 버튼을 눌러서만 합니다. " +
+                        "열차조회 버튼이 보이는 결과 화면에서 감시를 시작하세요.\n" +
                         "· 재조회 간격은 " +
                         "${formatSeconds(ReloadScheduler.MIN_INTERVAL_MS)}~" +
                         "${formatSeconds(ReloadScheduler.MAX_INTERVAL_MS)}초 범위에서 조정합니다. " +

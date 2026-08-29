@@ -23,9 +23,9 @@ import dev.yslee.catchtrain.notification.NotificationHelper
 import dev.yslee.catchtrain.ui.MainScreen
 import dev.yslee.catchtrain.ui.theme.CatchTrainTheme
 import dev.yslee.catchtrain.viewmodel.WatchViewModel
-import dev.yslee.catchtrain.webview.SrtPopupHost
-import dev.yslee.catchtrain.webview.SrtWebViewFactory
-import dev.yslee.catchtrain.webview.SrtWebViewHost
+import dev.yslee.catchtrain.webview.KtxPopupHost
+import dev.yslee.catchtrain.webview.KtxWebViewFactory
+import dev.yslee.catchtrain.webview.KtxWebViewHost
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -41,8 +41,8 @@ class MainActivity : ComponentActivity() {
     private val viewModel: WatchViewModel by viewModels()
 
     private lateinit var webView: WebView
-    private lateinit var host: SrtWebViewHost
-    private lateinit var popupHost: SrtPopupHost
+    private lateinit var host: KtxWebViewHost
+    private lateinit var popupHost: KtxPopupHost
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* 결과는 무시 */ }
@@ -58,10 +58,10 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
         )
 
-        webView = SrtWebViewFactory.create(this)
-        // 팝업(달력 등)이 떠 있는 동안에는 자동 조회를 하지 않는다. (SrtPopupHost 주석 참고)
-        popupHost = SrtPopupHost(webView)
-        host = SrtWebViewHost(webView, isPopupOpen = { popupHost.isOpen })
+        webView = KtxWebViewFactory.create(this)
+        // 팝업(달력 등)이 떠 있는 동안에는 자동 조회를 하지 않는다. (KtxPopupHost 주석 참고)
+        popupHost = KtxPopupHost(webView)
+        host = KtxWebViewHost(webView, isPopupOpen = { popupHost.isOpen })
         viewModel.attachHost(host)
 
         requestNotificationPermissionIfNeeded()
@@ -135,7 +135,7 @@ class MainActivity : ComponentActivity() {
         popupHost.onPause()
         webView.onPause()
         webView.pauseTimers()
-        SrtWebViewFactory.flushCookies()
+        KtxWebViewFactory.flushCookies()
         super.onStop()
     }
 
