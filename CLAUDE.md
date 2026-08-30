@@ -1,7 +1,8 @@
 # Catch Train — 작업 지침
 
-Android WebView 로 코레일(KTX) 조회 결과 화면을 감시하다가, 사용자가 체크해 둔 칸이
-열리면 알리고 그 칸을 골라 [예매] 를 눌러 주는 앱.
+코레일(KTX) 조회 결과 화면을 감시하다가, 사용자가 체크해 둔 칸이 열리면 알리고
+그 칸을 골라 [예매] 를 눌러 주는 도구. **클라이언트가 둘 있다** —
+안드로이드 앱(WebView, `android/`)과 크롬 확장(MV3, `extension/`).
 
 ```
 코레일 사이트에서 사용자가 직접 조회
@@ -13,6 +14,26 @@ Android WebView 로 코레일(KTX) 조회 결과 화면을 감시하다가, 사�
 ```
 
 ---
+
+## 저장소 구조 (모노레포)
+
+한 레포에 클라이언트 둘. 나누는 기준은 **"코레일이 바뀌면 같이 깨지는가"** 다.
+같이 깨지는 것은 공통에 한 벌만 두고, 플랫폼 사정은 각자 폴더로.
+
+```
+docs/        ← 공통. 설계 규칙 + 코레일 실측. 양쪽 코드가 §번호로 참조
+shared/      ← 공통. selector 단일 출처 (아직 계획 단계)
+CLAUDE.md    ← 공통. 이 파일
+android/     ← 안드로이드 앱. **Gradle 루트가 여기다**
+extension/   ← 크롬 확장. 아직 골격뿐
+```
+
+**대원칙은 안드로이드 규칙이 아니라 제품의 규칙이다.** 확장이라고 예외가 되지 않는다.
+확장에서 갈리는 지점(특히 `el.click()` 의 `isTrusted` 벽은 확장에도 그대로다)은
+[`extension/README.md`](extension/README.md) 에 있다.
+
+**사이트에 대한 사실을 폴더 안으로 복사하지 말 것.** `docs/DESIGN.md` 에 한 벌만 둔다.
+복사하는 순간 코레일이 바뀔 때 한쪽이 반드시 뒤처진다 — 모노레포로 간 이유가 이것뿐이다.
 
 ## 이 문서의 규칙
 
@@ -26,9 +47,12 @@ Android WebView 로 코레일(KTX) 조회 결과 화면을 감시하다가, 사�
 |---|---|---|
 | [`docs/KTX-MIGRATION.md`](docs/KTX-MIGRATION.md) | **★ 지금 진행 중인 일.** 어디까지 했고 뭐가 남았나 | **작업을 시작할 때 먼저** |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | 설계 규칙 + 실측 메모. **코드 KDoc 이 `§번호` 로 참조한다** | 동작을 바꾸기 전 |
-| [`docs/RELEASE.md`](docs/RELEASE.md) | 서명 키 / 버전 올리기 / APK 배포 | 배포할 때만 |
 | [`docs/HISTORY.md`](docs/HISTORY.md) | 원설계 의도, 폐기된 모델, 로드맵 | 거의 안 읽어도 된다 |
-| [`INSTALL.md`](INSTALL.md) | 최종 사용자에게 APK 와 함께 주는 안내문 | 배포할 때만 |
+| [`shared/README.md`](shared/README.md) | 공통화 계획 (selector 단일 출처) | 파서를 건드릴 때 |
+| [`extension/README.md`](extension/README.md) | 확장에서 갈리는 지점, 정해야 할 것 | 확장을 건드릴 때 |
+| [`android/README.md`](android/README.md) | 안드로이드 빌드와 쓰는 흐름 | |
+| [`android/RELEASE.md`](android/RELEASE.md) | 서명 키 / 버전 올리기 / APK 배포 | 배포할 때만 |
+| [`android/INSTALL.md`](android/INSTALL.md) | 최종 사용자에게 APK 와 함께 주는 안내문 | 배포할 때만 |
 
 **`docs/DESIGN.md` 의 § 번호는 바꾸지 않는다.** 코드 주석 100여 곳이 참조한다.
 내용을 고치는 것은 자유지만 번호를 다시 매기지 말 것. 절이 없어지면 번호를 비워 둔다.
@@ -139,14 +163,17 @@ UI → ViewModel → WatchController → PageHost(=WebView)
 ## 이 저장소에서 일할 때
 
 - **git 이 있다.** origin = `https://github.com/dudtj5307/catch-train.git`.
-  `main` = 통합 브랜치, `ktx` = KTX(코레일) 전환 작업 브랜치.
-  전환이 끝나면 `main` 에 머지하고 `ktx` 는 지운다.
+  `main` = 통합 브랜치. `ktx` 는 KTX 전환 작업 브랜치였고 **`main` 과 같아졌다**(머지 완료) —
+  지워도 된다.
   SRT 사이트 대응 마지막 버전은 태그 **`v0.1.1-srt`** 에 있다 (`git show v0.1.1-srt:<경로>`).
   SRT 는 폐지되었으므로 **SRT 코드를 살아있는 브랜치로 유지하지 않는다.** 태그면 충분하다.
-- `keystore.properties` · `*.jks` · `dist/` 는 `.gitignore` 에 있다.
+- `android/keystore.properties` · `*.jks` · `android/dist/` 는 `.gitignore` 에 있다.
   **절대 커밋하지 말 것** — 실제 서명 비밀번호가 평문으로 들어 있다.
+  (`.gitignore` 패턴에 슬래시가 없어 깊이와 무관하게 걸린다. 옮겨도 계속 무시된다)
 - 세션 밖에서 파일이 바뀌어 있는 경우가 잦으므로, 덮어쓰기 전에 **반드시 다시 읽는다.**
   (git 이전에 실제로 코드가 날아간 적 있다)
+- **Gradle 루트는 `android/` 다.** gradle 명령은 전부 그 폴더에서 실행하고,
+  Android Studio 도 저장소 루트가 아니라 `android/` 를 연다.
 - 툴체인은 로컬에 다 있다. `--offline` 로 컴파일·단위테스트·debug APK 빌드가 전부 된다.
   단 `assembleRelease` 는 `lintVital` 이 의존성을 받아와야 해서 `--offline` 이면 실패한다.
 - `WatchControllerTest` 에서 **`advanceUntilIdle()` 을 쓰지 않는다.**
@@ -154,20 +181,22 @@ UI → ViewModel → WatchController → PageHost(=WebView)
 - 파싱이 깨졌을 때 고칠 곳은 두 파일뿐이다:
   `webview/KtxSelectors.kt`(selector·키워드), `webview/KtxParserScript.kt`(추출 로직).
   확인은 `chrome://inspect` 로 실제 WebView DOM 을 보고 한다.
+  **selector 를 고치면 확장 쪽도 같이 봐야 한다** → [`shared/README.md`](shared/README.md)
 
 ```bash
-./gradlew --offline :app:testDebugUnitTest
+cd android && ./gradlew --offline :app:testDebugUnitTest
 ```
 
 ```bash
-./gradlew --offline :app:assembleDebug
+cd android && ./gradlew --offline :app:assembleDebug
 ```
 
 ---
 
-## 코드 지도
+## 코드 지도 (안드로이드)
 
-`app/src/main/java/dev/yslee/catchtrain/` — 이름으로 알 수 없는 것만 적는다.
+`android/app/src/main/java/dev/yslee/catchtrain/` — 이름으로 알 수 없는 것만 적는다.
+(아래 표의 경로는 이 디렉터리 기준. 확장 쪽 구조는 [`extension/README.md`](extension/README.md))
 
 | 위치 | 역할 |
 |---|---|

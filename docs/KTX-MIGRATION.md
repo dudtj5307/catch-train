@@ -43,7 +43,7 @@ SRT 폐지로 같은 앱을 코레일 대응으로 바꾸는 작업. 브랜치 `
 - `Srt*` → `Ktx*` 이름, UI·알림 문구, `START_URL` 전부 코레일로.
   살아 있는 코드에 `Srt` 로 시작하는 이름은 없다. 남은 "SRT" 는 **비교·역사 서술**뿐이다.
 
-단위 테스트 102건 통과. `./gradlew --offline :app:testDebugUnitTest`
+단위 테스트 102건 통과. `cd android && ./gradlew --offline :app:testDebugUnitTest`
 debug APK 빌드도 통과.
 
 ---

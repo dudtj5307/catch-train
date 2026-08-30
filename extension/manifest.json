@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Catch Train",
+  "version": "0.0.1",
+  "description": "코레일(KTX) 조회 결과에서 체크해 둔 칸이 열리면 알리고 [예매] 까지 눌러 준다.",
+  "permissions": ["notifications", "storage"],
+  "host_permissions": ["https://www.korail.com/*"],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.korail.com/*"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Catch Train"
+  }
+}

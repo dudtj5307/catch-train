@@ -9,17 +9,26 @@
 
 한눈에 보는 대원칙은 [`../CLAUDE.md`](../CLAUDE.md) 에 있다. 여기는 그 근거와 세부다.
 
+> **이 문서는 클라이언트 양쪽(`android/` · `extension/`)의 공통 문서다.**
+> 코레일 사이트에 대한 사실(§10 · §12-1 · §38 · §39)은 플랫폼과 무관하게 그대로 적용된다.
+> 나머지 대부분은 안드로이드 구현 서술이다 — 확장에서 읽을 때는 §32 를 먼저 본다.
+
 ---
 
 ## §5. 기술 스택
 
-Kotlin / Jetpack Compose (Material 3) / ViewModel + StateFlow / Coroutines /
-WebView / DataStore Preferences. minSdk 26 — `java.time` 과 `NotificationChannel` 을
-desugaring 없이 쓰기 위해서다.
+**안드로이드 (`android/`)** — Kotlin / Jetpack Compose (Material 3) / ViewModel + StateFlow /
+Coroutines / WebView / DataStore Preferences. minSdk 26 — `java.time` 과
+`NotificationChannel` 을 desugaring 없이 쓰기 위해서다.
+
+**크롬 확장 (`extension/`)** — Manifest V3. 아직 골격뿐이다 → [`../extension/README.md`](../extension/README.md)
 
 ## §6. 프로젝트 구조
 
-[`../CLAUDE.md`](../CLAUDE.md) 의 "코드 지도" 참조. 패키지는
+저장소는 모노레포다: `android/` · `extension/` · 공통 `docs/` · `shared/` (§32).
+Gradle 루트는 **`android/`** 다.
+
+안드로이드 코드 지도는 [`../CLAUDE.md`](../CLAUDE.md) 참조. 패키지는
 `ui / viewmodel / watcher / webview / parser / domain / notification / storage`.
 
 ## §7. 핵심 데이터 모델
@@ -537,10 +546,21 @@ selector 를 코드 곳곳에 하드코딩하지 않는다. **`KtxSelectors` 한
 새 줄이 붙으면 맨 아래로 따라가되, **사용자가 위로 올려 둔 동안에는 따라가지 않는다** —
 끌어서 고르는 중에 화면이 움직이면 선택이 끊긴다.
 
-## §32. PC Extension 과의 공통화 (향후)
+## §32. 크롬 확장과의 공통화
 
-DOM Parser 는 플랫폼마다 따로 두더라도 **`domain/` 과 `SelectionEngine` 은 그대로
-공유할 수 있게** Android 의존성을 넣지 않는다. 이 제약의 실질적 이유가 여기에 있다.
+`domain/` 과 `SelectionEngine` 에 Android 의존성을 넣지 않는 제약의 실질적 이유가 여기에 있다.
+DOM Parser 는 플랫폼마다 따로 두더라도 **판정 로직은 규칙이 같아야 한다.**
+
+2026-08-30, 저장소를 모노레포로 바꾸면서 확장 작업이 시작됐다
+(`android/` · `extension/` · `shared/`). 나누는 기준은 **"코레일이 바뀌면 같이 깨지는가"**:
+
+- **같이 깨지는 것** = 이 문서(§10 · §12-1 · §38 · §39)와 selector → `docs/` 와 `shared/`.
+  한 벌만 두고 양쪽이 참조한다. 복사하면 반드시 한쪽이 뒤처진다.
+- **플랫폼 사정** = 그 밖의 절 대부분(§5 · §21~§26 등은 Android 구현 서술이다) → 각 폴더.
+
+확장에서 그대로 옮겨오면 안 되는 것은 [`../extension/README.md`](../extension/README.md)
+"안드로이드와 갈리는 지점" 에 있다. 특히 **`el.click()` 의 `isTrusted` 벽은 확장에도 그대로**라
+`MotionEvent` 자리는 다시 설계해야 한다.
 
 ## §34. 가장 중요한 설계 원칙
 
