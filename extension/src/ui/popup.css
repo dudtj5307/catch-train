@@ -1,0 +1,138 @@
+/* 팝업은 좁다. 한 줄에 담기지 않으면 목록이 아니라 벽이 된다. */
+:root {
+  color-scheme: light dark;
+  --fg: #1b1b1f;
+  --muted: #5b5b66;
+  --line: #dcdce4;
+  --bg: #ffffff;
+  --accent: #1a56db;
+  --warn: #a4501a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e5e5ea;
+    --muted: #a0a0ad;
+    --line: #3a3a44;
+    --bg: #1c1c20;
+    --accent: #7ea6ff;
+    --warn: #e0a26a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 380px;
+  margin: 0;
+  padding: 10px 12px 12px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 system-ui, "Segoe UI", "Malgun Gothic", sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.count {
+  flex: 1;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.link {
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.link:disabled { color: var(--muted); cursor: default; }
+
+.notice {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  white-space: pre-line;
+}
+
+table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+}
+
+th, td {
+  padding: 5px 2px;
+  border-bottom: 1px solid var(--line);
+  text-align: center;
+}
+
+th {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.col-train { text-align: left; }
+.col-seat { width: 74px; }
+
+tbody tr:last-child td { border-bottom: 0; }
+
+td.train { text-align: left; }
+
+.time {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.number {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* 상태 문구를 체크박스 옆에 남긴다. 안드로이드는 바로 아래에 사이트 화면이 있어
+   뺐지만, 팝업은 그 화면을 가리고 뜬다. */
+.seat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+.seat input { margin: 0; }
+
+.status { color: var(--muted); font-size: 10px; }
+.status.available { color: var(--accent); }
+
+footer { margin-top: 10px; }
+
+.hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.stage { opacity: 0.85; }
+
+.warnings {
+  margin: 6px 0 0;
+  color: var(--warn);
+  font-size: 11px;
+  white-space: pre-line;
+}

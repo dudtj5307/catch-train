@@ -20,6 +20,10 @@ selector·URL·키워드 상수를 옮긴 것. 확장은 직접 import 하고,
 **아직 옮기지 않았다.** 확장 쪽 파서가 실제로 돌기 시작한 뒤에 한다 —
 쓰는 데가 한 곳뿐인 상태에서 미리 쪼개면 형식만 정하고 검증은 못 한다.
 
+지금은 **`extension/src/content/ktx/selectors.js` 가 손으로 맞춘 미러**다.
+selector 를 고치면 두 파일을 같이 봐야 한다 (`KtxSelectors.kt` ↔ `selectors.js`).
+승격은 `extension/PLAN.md` §E-9 의 M5.
+
 ### `ktx-parse.js` (그럴 값어치가 있으면)
 
 `KtxParserScript.kt` 의 추출 로직. 안드로이드는 `assets/` 에서 읽어

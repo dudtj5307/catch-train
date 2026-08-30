@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>Catch Train</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>열차 선택</h1>
+      <span id="count" class="count"></span>
+      <button id="clear" class="link" hidden>모두 해제</button>
+      <button id="refresh" class="link">갱신</button>
+    </header>
+
+    <p id="notice" class="notice" hidden></p>
+
+    <table id="table" hidden>
+      <thead>
+        <tr>
+          <th class="col-train">출발 / 열차</th>
+          <!-- 사이트와 같은 순서: 일반실이 왼쪽, 특실이 오른쪽. (§38-3) -->
+          <th class="col-seat">일반실</th>
+          <th class="col-seat">특실</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <footer>
+      <p id="warnings" class="warnings" hidden></p>
+      <p class="hint">
+        체크한 칸이 열리면 알리고 그 칸을 골라 [예매] 까지만 누릅니다.
+        예약대기는 성격이 다른 신청이라 누르지 않습니다.
+      </p>
+      <p class="hint stage">지금은 <b>판독까지만</b> 동작합니다. 감시는 아직 붙지 않았습니다.</p>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
