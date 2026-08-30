@@ -37,6 +37,36 @@ class KtxLoginScriptTest {
     }
 
     /**
+     * **보이는 요소만 세면 안 된다.** (2026-08-29 `/ticket/search/list` 실측, §38-7)
+     *
+     * 폰 폭에서는 `ul.h_top_right` 와 `div.header_top` 이 `display:none` 이라
+     * `a.btnGoLogin` 의 rect 가 0×0 이고 `offsetParent` 도 없다. 가시성으로 거르면
+     * 링크도 문구도 하나도 안 잡혀 **언제나 UNKNOWN** 이 되고, 앱의 WebView 는 항상
+     * 폰 폭이므로 로그인 확인이 통째로 죽는다. [열차조회] 버튼과 같은 함정이다 (§38-9).
+     */
+    @Test
+    fun `가시성으로 후보를 거르지 않는다`() {
+        val script = KtxLoginScript.build()
+
+        assertFalse(
+            "가시성으로 거르면 폰 폭에서 로그인 표시를 하나도 찾지 못한다",
+            script.contains("if (isShown(nodes[k])) return") ||
+                script.contains("if (!isShown(nodes[j])) continue"),
+        )
+        // 숨어 있었다는 사실은 판정이 아니라 로그(detail)에만 남는다.
+        assertTrue(script.contains("(숨김)"))
+    }
+
+    /** 링크가 빗나갔을 때 볼 모바일 전체메뉴 영역이 문구 판정 범위에 들어 있어야 한다. */
+    @Test
+    fun `문구 판정은 모바일 전체메뉴까지 본다`() {
+        val script = KtxLoginScript.build()
+
+        assertTrue(script.contains("menuScopes"))
+        assertTrue(script.contains("bottom_menu_choose"))
+    }
+
+    /**
      * 로그인 화면 본문에는 "…자동으로 로그아웃됩니다." 같은 안내가 있다.
      * 그래서 문구 비교는 반드시 완전 일치여야 하고, 본문 전체를 훑으면 안 된다.
      */
@@ -76,6 +106,31 @@ class KtxLoginScriptTest {
                 assertEquals("입력=$raw", LoginState.UNKNOWN, result.state)
                 assertFalse("입력=$raw", result.blocksWatch)
             }
+    }
+
+    /**
+     * 메인 화면 판정. **여기가 참일 때만** 로그인 화면으로 보낸다. (§27-2)
+     *
+     * 조회 결과 화면(`/ticket/search/list`)이 여기에 걸리면 사용자가 넣어 둔 조회 조건이
+     * 통째로 날아간다 (대원칙 4·5). 그래서 경로 끝으로만 본다.
+     */
+    @Test
+    fun `메인 화면 URL 만 참이다`() {
+        listOf(
+            KtxSelectors.START_URL,
+            "https://www.korail.com/ticket/main/",
+            "https://www.korail.com/ticket/main?tab=1",
+            "https://www.korail.com/ticket/main#none",
+        ).forEach { assertTrue("메인이어야 한다: $it", KtxSelectors.isMainPage(it)) }
+
+        listOf(
+            null,
+            "",
+            KtxSelectors.SCHEDULE_URL,
+            KtxSelectors.LOGIN_URL,
+            "https://www.korail.com/ticket/main/detail",
+            "https://example.com/ticket/main",
+        ).forEach { assertFalse("메인이 아니어야 한다: $it", KtxSelectors.isMainPage(it)) }
     }
 
     /** evaluateJavascript 는 결과를 한 번 더 문자열로 감싸 줄 때가 있다. */

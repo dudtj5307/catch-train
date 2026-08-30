@@ -89,16 +89,16 @@ enum class WatchError {
     UNKNOWN_PAGE,
 
     /**
-     * "조회하기" 버튼을 찾지 못했다.
-     * 이 앱은 reload 로 갱신하지 않으므로, 버튼이 없으면 감시를 진행할 수 없다.
+     * 새로고침했지만 감시할 수 있는 화면에 닿지 못했다. (DESIGN.md §38-9)
+     * 차단 안내나 오류 화면이 떠 있는 경우다.
      */
-    RESEARCH_BUTTON_NOT_FOUND,
+    REFRESH_FAILED,
 
     /**
-     * 버튼은 찾았지만 화면에서 직접 누를 수 없었다.
+     * WebView 가 화면에 없어 새로고침하지 않았다.
      * 조회 요청이 나가지 않은 상태라 차단 위험은 없다.
      */
-    RESEARCH_BUTTON_NOT_TAPPABLE,
+    REFRESH_NOT_VISIBLE,
 
     /** 접속이 차단되었다. 재시도하지 않고 즉시 멈춘다. */
     BLOCKED,
@@ -112,8 +112,8 @@ enum class WatchError {
             LOGIN_REQUIRED -> "로그인 필요"
             SESSION_EXPIRED -> "세션 만료"
             UNKNOWN_PAGE -> "감시할 수 없는 페이지"
-            RESEARCH_BUTTON_NOT_FOUND -> "조회 버튼을 찾지 못함"
-            RESEARCH_BUTTON_NOT_TAPPABLE -> "조회 버튼을 누를 수 없음"
+            REFRESH_FAILED -> "새로고침 실패"
+            REFRESH_NOT_VISIBLE -> "화면이 보이지 않음"
             BLOCKED -> "접속 차단"
         }
 
@@ -125,13 +125,13 @@ enum class WatchError {
             LOGIN_REQUIRED -> "WebView 에서 직접 로그인한 뒤 다시 시도하세요."
             SESSION_EXPIRED -> "세션이 만료되었습니다. 다시 로그인하세요."
             UNKNOWN_PAGE -> "열차 조회 결과 화면에서 감시를 시작하세요."
-            RESEARCH_BUTTON_NOT_FOUND ->
-                "화면에 [조회하기] 버튼이 보이는 조회 결과 페이지에서 감시를 시작하세요. " +
-                    "차단 안내나 오류 화면이 떠 있는지 먼저 확인하세요."
-            RESEARCH_BUTTON_NOT_TAPPABLE ->
-                "[조회하기] 버튼이 화면에 보이도록 WebView 를 넓히거나 스크롤한 뒤 다시 시도하세요. " +
-                    "이 앱은 버튼을 URL 로 호출하지 않고 화면에서 직접 누르기 때문에, " +
-                    "버튼이 가려져 있으면 누를 수 없습니다."
+            REFRESH_FAILED ->
+                "새로고침했지만 열차 목록 화면으로 돌아오지 못했습니다. " +
+                    "차단 안내나 오류 화면이 떠 있는지 먼저 확인하고, " +
+                    "조회 결과 화면에서 다시 시작하세요."
+            REFRESH_NOT_VISIBLE ->
+                "코레일 화면이 보이는 상태에서 감시하세요. " +
+                    "이 앱은 사람이 볼 수 없는 화면은 새로고침하지 않습니다."
             BLOCKED ->
                 "접속이 차단된 것으로 보입니다. 감시를 멈췄습니다. " +
                     "한동안 기다린 뒤 재조회 간격을 최대한 늘려서 다시 시작하세요."

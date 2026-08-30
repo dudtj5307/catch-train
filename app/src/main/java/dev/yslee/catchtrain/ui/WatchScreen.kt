@@ -8,12 +8,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -26,8 +26,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -71,18 +78,17 @@ import java.util.Locale
 fun SelectionSummaryCard(
     selection: WatchSelection,
     searchSummary: String?,
-    onEdit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     PanelCard(modifier = modifier) {
         Row(
-            modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 14.dp, bottom = 14.dp),
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
             verticalAlignment = Alignment.Top,
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "감시할 좌석",
+                        text = "감시중인 좌석",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                     )
@@ -126,14 +132,6 @@ fun SelectionSummaryCard(
                         )
                     }
                 }
-            }
-            TextButton(
-                onClick = onEdit,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.primary,
-                ),
-            ) {
-                Text("선택 ›", style = MaterialTheme.typography.labelLarge)
             }
         }
     }
@@ -186,10 +184,14 @@ fun StatusCard(
     modifier: Modifier = Modifier,
 ) {
     val failed = status.state == WatchState.ERROR
-    val matched = status.state == WatchState.MATCHED
     val error = status.error
-    // 좌석을 찾은 상황은 아래 [MatchedCard] 가 훨씬 크게 알려 준다.
-    val note = if (error == null && !matched) status.message?.takeIf { it.isNotBlank() } else null
+    // 안내 문구를 띄우지 않는 상태들:
+    //  - MATCHED  : 아래 [MatchedCard] 가 훨씬 크게 알려 준다.
+    //  - RESERVED : [예매] 를 누른 뒤 화면은 코레일 예약 화면이다. 무엇을 눌렀고 이제
+    //               무엇을 해야 하는지는 그 화면이 그대로 보여 주므로, 같은 말을 위에
+    //               한 번 더 적으면 정작 봐야 할 화면만 밀어낸다. (§19-3, §38-6)
+    val silent = status.state == WatchState.MATCHED || status.state == WatchState.RESERVED
+    val note = if (error == null && !silent) status.message?.takeIf { it.isNotBlank() } else null
     if (error == null && note == null) return
 
     PanelCard(
@@ -434,8 +436,9 @@ private fun SeatCheckCell(
 /**
  * 선택한 좌석이 열렸을 때 + 후속 동작. (DESIGN.md §19, §34-5)
  *
- * [reserve] 는 이번에 시도한 자동 예매 결과다. 성공하면 화면이 예약 단계로
- * 넘어가 [ReservedCard] 가 대신 뜨므로, 여기서는 실패했을 때만 사유를 알려준다.
+ * [reserve] 는 이번에 시도한 자동 예매 결과다. 성공하면 이 카드가 사라지고
+ * 코레일 예약 화면이 그대로 드러나므로, 여기서는 실패했을 때만 사유를 알려준다.
+ * (그때 앱이 띄우는 것은 재촉 알림을 끄는 [ReserveAlertCard] 뿐이다)
  */
 @Composable
 fun MatchedCard(
@@ -524,99 +527,44 @@ fun MatchedCard(
 }
 
 /**
- * 자동 예매가 끝난 상태. (DESIGN.md §34-5, §38-6)
+ * 결제 재촉 알림을 끄는 카드. (DESIGN.md §19-3, §34-5, §38-6)
  *
- * 두 가지를 함께 맡는다.
- *  - **2단계까지 눌렀다** ([ReserveResult.CLICKED]) — 예약 화면으로 넘어가 있다.
- *  - **좌석만 골라 뒀다** — 하단 바의 [예매] 는 사람이 눌러야 한다. (§38-6-1)
+ * 자동 예매가 끝나면([WatchState.RESERVED] / [WatchState.SEAT_SELECTED]) 어느 열차의
+ * 어떤 좌석인지, 지금 무엇을 해야 하는지는 **바로 아래 코레일 화면이 그대로 보여 준다.**
+ * 같은 내용을 위에 한 번 더 적어 봐야 정작 봐야 할 예약 화면만 밀어낸다.
+ * 그래서 앱 화면에 남기는 것은 코레일 화면에 없는 것 하나뿐이다 —
+ * **10초마다 울리는 재촉 알림을 끄는 버튼.**
  *
- * 어느 쪽이든 여기서부터 코레일 페이지에 대고 앱이 하는 일은 없고,
- * 사용자가 지금 화면을 봐야 한다는 점도 같다. 결제 제한 시간이 있어
- * 서두르라는 안내를 가장 크게 둔다.
- *
- * 다만 사용자가 이 화면을 못 보고 있을 수 있으므로, 10초마다 소리와 진동으로
- * 재촉하는 알림이 따로 나간다. 좌석이 풀리는 10분까지만이다.
- * ([alerting], DESIGN.md §19-3)
+ * 재촉이 울리지 않는 동안([alerting] = false)에는 할 말이 없으므로 카드를 띄우지 않는다.
+ * 감시를 다시 시작하는 것은 아래 조작 바의 [감시 시작] 이 맡는다.
  */
 @Composable
-fun ReservedCard(
-    reserve: ReserveAttempt,
-    onStop: () -> Unit,
+fun ReserveAlertCard(
+    onSilence: () -> Unit,
     modifier: Modifier = Modifier,
-    alerting: Boolean = false,
-    onSilence: () -> Unit = {},
 ) {
     PanelCard(
         modifier = modifier,
         containerColor = MaterialTheme.colorScheme.primaryContainer,
         borderColor = MaterialTheme.colorScheme.primary,
     ) {
-        // 2단계까지 눌렀는가, 좌석만 골라 뒀는가. 사용자가 할 일이 다르다.
-        val clicked = reserve.result.succeeded
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                text = if (clicked) "🎫 [예매] 를 눌렀습니다" else "🎟 좌석을 골라 뒀습니다",
-                style = MaterialTheme.typography.titleSmall,
+                text = "🔔 10초마다 알림이 울립니다. 10분 안에 결제하지 않으면 좌석이 풀립니다.",
+                style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,
             )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = reserve.match.train.summary(),
-                style = MonoDense,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
-            Text(
-                text = "좌석 등급: ${reserve.match.seatClass.label}",
-                style = MonoDense,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = if (clicked) {
-                    "아래 코레일 화면에서 좌석 선택과 결제를 직접 진행하세요. " +
-                        "결제 제한 시간이 있으니 서두르세요."
-                } else {
-                    // 앱이 일부러 멈춘 자리다. 무엇을 눌러야 하는지만 분명히 알려준다. (§38-6-1)
-                    "아래 코레일 화면 맨 아래의 [예매] 를 직접 눌러 주세요. " +
-                        "(${reserve.result.label})"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            if (alerting) {
-                Text(
-                    text = "🔔 10초마다 알림이 울립니다. 10분 안에 결제하지 않으면 좌석이 풀립니다.",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
-            Row(
+            // 알림만 끄고 예약 화면은 그대로 둔다. 결제는 아직 안 끝났다.
+            Button(
+                onClick = onSilence,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                shape = MaterialTheme.shapes.small,
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
             ) {
-                if (alerting) {
-                    // 알림만 끄고 예약 화면은 그대로 둔다. 결제는 아직 안 끝났다.
-                    Button(
-                        onClick = onSilence,
-                        modifier = Modifier.weight(1f),
-                        shape = MaterialTheme.shapes.small,
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
-                    ) {
-                        Text("🔕 알림 끄기")
-                    }
-                }
-                OutlinedButton(
-                    onClick = onStop,
-                    modifier = Modifier.weight(1f),
-                    shape = MaterialTheme.shapes.small,
-                ) {
-                    Text("감시 종료")
-                }
+                Text("🔕 알림 끄기")
             }
         }
     }
@@ -626,13 +574,52 @@ fun ReservedCard(
  * 개발용 로그 패널. (DESIGN.md §29)
  *
  * 목록 자체는 화면에서 가장 어두운 면에 얹어 터미널처럼 보이게 한다.
+ *
+ * ### 왜 줄마다 Text 를 두지 않고 한 덩어리인가
+ *
+ * 로그를 **PC 로 옮겨야** 고칠 수 있다. 그래서 손으로 끌어 고르는 것과
+ * [복사] 둘 다 되어야 한다.
+ *
+ * `LazyColumn` + 줄마다 `Text` 는 그 둘을 못 한다. 화면 밖으로 나간 줄은 조합에서
+ * 빠지므로 **끌어서 고를 수 있는 범위가 지금 보이는 화면까지**로 잘린다.
+ * 줄 사이 경계에서 선택이 끊기기도 한다. 그래서 전체를 문자열 하나로 만들어
+ * [SelectionContainer] 안의 `Text` 하나에 담고, 스크롤을 바깥에서 준다.
+ * 버퍼는 `WatchLogger` 가 300줄로 묶어 두므로 한 번에 배치해도 부담이 없다.
  */
 @Composable
 fun LogPanel(
     logs: List<WatchLogEntry>,
     onClear: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * 역 선택 창 진단. (DESIGN.md §38-10)
+     *
+     * 이 창은 페이지가 스스로 그리는 react-modal 이라 안 뜰 때 앱이 대신 띄울 수 없다.
+     * 로그 창에 둔 이유가 그것이다 — 여기서 할 수 있는 일은 원인을 남기는 것뿐이다.
+     */
+    onProbeStation: (() -> Unit)? = null,
+    /** 클립보드에 담은 직후. 몇 줄이었는지 넘긴다. 안내 문구는 부르는 쪽이 정한다. */
+    onCopied: (Int) -> Unit = {},
 ) {
+    val clipboard = LocalClipboardManager.current
+    val scroll = rememberScrollState()
+
+    // `WatchLogger.dump()` 와 같은 순서(오래된 것이 위). 복사한 것과 화면이 어긋나면 안 된다.
+    val text = remember(logs) { logs.joinToString("\n") { it.format() } }
+
+    // 새 줄이 붙으면 맨 아래로 따라간다. 단 **사용자가 위로 올려 둔 동안에는 가만히 둔다** —
+    // 끌어서 고르는 중에 화면이 움직이면 선택이 끊긴다.
+    var follow by remember { mutableStateOf(true) }
+    LaunchedEffect(scroll.isScrollInProgress) {
+        if (!scroll.isScrollInProgress) {
+            follow = scroll.value >= scroll.maxValue - FOLLOW_BOTTOM_SLACK_PX
+        }
+    }
+    // maxValue 를 키로 두는 것이 중요하다. 글이 늘어난 **다음** 배치까지 기다렸다가 내려간다.
+    LaunchedEffect(scroll.maxValue) {
+        if (follow) scroll.scrollTo(scroll.maxValue)
+    }
+
     PanelCard(modifier = modifier) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -648,14 +635,18 @@ fun LogPanel(
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.weight(1f),
                 )
-                TextButton(
-                    onClick = onClear,
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    ),
-                ) {
-                    Text("지우기", style = MaterialTheme.typography.labelMedium)
+                if (onProbeStation != null) {
+                    LogPanelButton("역 진단", onClick = onProbeStation)
                 }
+                LogPanelButton(
+                    label = "복사",
+                    enabled = logs.isNotEmpty(),
+                    onClick = {
+                        clipboard.setText(AnnotatedString(text))
+                        onCopied(logs.size)
+                    },
+                )
+                LogPanelButton("지우기", onClick = onClear)
             }
             Spacer(Modifier.height(4.dp))
             if (logs.isEmpty()) {
@@ -666,25 +657,43 @@ fun LogPanel(
                     modifier = Modifier.padding(vertical = 8.dp),
                 )
             } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .heightIn(max = 220.dp)
-                        .fillMaxWidth()
-                        .background(AppColors.Terminal, MaterialTheme.shapes.extraSmall)
-                        .padding(vertical = 6.dp),
-                    reverseLayout = true,
-                ) {
-                    items(logs.asReversed()) { entry ->
-                        Text(
-                            text = entry.format(),
-                            style = MonoDense,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp),
-                        )
-                    }
+                SelectionContainer {
+                    Text(
+                        text = text,
+                        style = MonoDense,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .heightIn(max = 220.dp)
+                            .fillMaxWidth()
+                            .background(AppColors.Terminal, MaterialTheme.shapes.extraSmall)
+                            .verticalScroll(scroll)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                    )
                 }
             }
         }
+    }
+}
+
+/**
+ * 로그 패널 머리말의 작은 버튼. 셋이 한 줄에 들어가야 해서 좌우 여백을 줄인다.
+ * (기본 [TextButton] 여백이면 좁은 화면에서 [지우기] 가 잘린다)
+ */
+@Composable
+private fun LogPanelButton(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+        colors = ButtonDefaults.textButtonColors(
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        ),
+    ) {
+        Text(label, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -698,3 +707,9 @@ private val SEAT_CELL_WIDTH = 78.dp
 
 /** 열차 한 줄의 위아래 여백. 목록이 길어 한 화면에 최대한 많이 담는다. */
 private val ROW_VERTICAL_PADDING = 1.dp
+
+/**
+ * 로그 창이 "맨 아래에 있다" 고 볼 여유(px). 손을 뗀 위치가 이 안이면 새 줄을 계속 따라간다.
+ * 한 줄 높이보다 조금 작게 둔다 — 일부러 위로 올렸는지와 구분되면 된다.
+ */
+private const val FOLLOW_BOTTOM_SLACK_PX = 24

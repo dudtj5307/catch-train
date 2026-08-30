@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -56,6 +57,14 @@ import kotlinx.coroutines.flow.asStateFlow
 class KtxPopupHost(
     private val parent: WebView,
     private val createWebView: (Context) -> WebView = { KtxWebViewFactory.create(it) },
+    /**
+     * 페이지 안에서 난 JS 오류/경고를 받는다. (§38-10)
+     *
+     * 창을 여는 것과 상관없어 보이지만 여기 있어야 한다. `WebChromeClient` 는 WebView 당
+     * 하나뿐이고 이 클래스가 그것을 소유하므로, 다른 곳에서 콘솔을 받으려면 이 클라이언트를
+     * 덮어써야 한다 — 그러면 `onCreateWindow` 가 죽어 팝업이 통째로 사라진다.
+     */
+    private val onConsoleError: (String) -> Unit = {},
 ) {
 
     /** 화면에 띄울 팝업 창 하나. */
@@ -156,6 +165,38 @@ class KtxPopupHost(
             if (title.isNullOrBlank()) return
             update(view) { it.copy(title = title) }
         }
+
+        /**
+         * 페이지 안에서 난 JS 오류를 밖으로 꺼낸다. (DESIGN.md §38-10)
+         *
+         * 코레일의 역/지역 선택 창은 `window.open` 팝업이 **아니다.** `document.body` 끝에
+         * 붙는 react-modal 포털(`div.ReactModalPortal` → `position:fixed`, z-index 1005)이라
+         * 페이지 안에서 그려지고, [KtxPopupHost] 는 아예 관여하지 않는다. 그래서 이 창이
+         * 안 뜰 때 앱이 "위로 올려" 줄 방법이 없다 — 원인은 WebView 안의 JS 다.
+         *
+         * `chrome://inspect` 없이도 그 오류를 볼 수 있어야 고칠 수 있으므로 여기로 흘린다.
+         * **오류/경고만 넘긴다.** 코레일은 평소에도 로그를 쏟아내서 전부 받으면 로그 창이
+         * 그것만으로 가득 찬다.
+         */
+        override fun onConsoleMessage(message: ConsoleMessage?): Boolean {
+            val level = message?.messageLevel() ?: return false
+            if (level != ConsoleMessage.MessageLevel.ERROR &&
+                level != ConsoleMessage.MessageLevel.WARNING
+            ) {
+                return false
+            }
+            val source = message.sourceId()?.substringAfterLast('/').orEmpty()
+            onConsoleError(
+                buildString {
+                    append(level.name).append(" ")
+                    append(message.message().take(CONSOLE_MESSAGE_CHARS))
+                    if (source.isNotBlank()) append(" (").append(source).append(":")
+                        .append(message.lineNumber()).append(")")
+                },
+            )
+            // false 를 돌려주면 WebView 가 하던 대로 logcat 에도 남긴다.
+            return false
+        }
     }
 
     private fun childWebViewClient(): WebViewClient = object : WebViewClient() {
@@ -209,5 +250,8 @@ class KtxPopupHost(
         const val MAX_POPUPS = 3
 
         const val DEFAULT_TITLE = "코레일"
+
+        /** 콘솔 메시지는 길다. 로그 창이 한 줄로 덮이지 않을 만큼만 남긴다. */
+        const val CONSOLE_MESSAGE_CHARS = 160
     }
 }

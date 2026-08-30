@@ -4,20 +4,27 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
+import android.view.View
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
@@ -27,14 +34,25 @@ import kotlin.random.Random
  * 실제 WebView 를 [PageHost] 로 감싼다. (DESIGN.md §10, §14, §38)
  *
  * - WebViewClient 를 설치하여 onPageStarted / onPageFinished / onReceivedError 를 수집한다.
- * - 갱신은 항상 **화면에 보이는 [열차조회] 버튼을 직접 누르는 것**으로만 한다.
- *   [WebView.reload] 도, 조회 URL 직접 호출도 하지 않는다.
- * - 예매도 똑같은 방식이다. 다만 **두 번 눌러야 한다.** (§38-6)
+ * - 갱신([requery])은 **페이지 새로고침**([WebView.reload], = F5) 하나뿐이다. (§38-9)
+ *   조회 URL 직접 호출은 여전히 하지 않는다.
+ * - **예매는 다르다.** 좌석 칸과 [예매] 버튼은 화면에 실제로 있으므로 예전 그대로
+ *   [MotionEvent] 로 직접 누른다. 그리고 **두 번 눌러야 한다.** (§38-6)
  *   [selectSeat] 로 좌석 칸을 고르고, [confirmReserve] 로 하단 바의 [예매] 를 누른다.
  * - JavaScript 의 setInterval 은 사용하지 않는다. (§34-3)
  * - WebView API 는 모두 메인 스레드에서 호출한다.
  *
- * 클릭 방식이 핵심이다. 한 번의 누름은 이렇게 진행된다.
+ * ## 갱신이 왜 새로고침인가
+ *
+ * 원래는 결과 화면의 [열차조회] 버튼을 진짜 터치로 눌렀다. **모바일 폭에서는 그 버튼이
+ * 없다.** `div.btnWrap.btn_box` 가 `display:none` 이라 rect 가 0×0 이고, 그 자리에 보이는
+ * 것은 절대 눌러선 안 되는 `다음날 (…) 조회` 뿐이다. (§38-9)
+ *
+ * 조회 조건은 `localStorage["LS_TICKET_GENERAL"]` 에 있어서 새로고침해도 살아남는다.
+ * 다시 불러오면 SPA 가 그 값으로 같은 조회를 스스로 되풀이한다.
+ *
+ * ## 예매 클릭 방식 (그대로다)
+ *
  *  1) [KtxParserScript] 의 탐색 스크립트로 **화면 좌표**만 알아낸다. (누르지 않는다)
  *  2) 그 좌표에 [MotionEvent] 를 내려보낸다. 사용자가 손가락으로 누른 것과 같은 입력이다.
  *  3) [KtxParserScript.buildTapConfirmScript] 로 클릭이 목표까지 갔는지 확인한다.
@@ -43,12 +61,13 @@ import kotlin.random.Random
  * 이벤트이기 때문이고, `a[href]` 나 URL 직접 호출을 쓰지 않는 이유는 그 경로가
  * 사실상 항상 차단되기 때문이다.
  *
- * 클릭 후 "정착"은 두 경로로 감지한다.
- *  1) 화면이 전환되면 onPageFinished
- *  2) 화면 전환 없이 목록만 바뀌면(AJAX) MutationObserver / 목록 서명 변화
+ * ## 정착 감지
  *
- * **코레일 조회는 `<form>` 이 없는 AJAX 라 1) 이 오지 않는다.** (§38-5)
- * 정상 경로는 언제나 2) 이고, 그래서 서명을 뜨는 대상이 정확해야 한다.
+ * 갱신([awaitReloaded])은 화면 전환이 확실하므로 `onPageFinished` 를 먼저 기다리고,
+ * 그다음 **목록이 다시 그려졌는지**를 폴링한다. 문서 로딩과 목록 렌더링은 별개다.
+ *
+ * 예매 2단계와 되돌리기([awaitSettled])는 화면 전환이 있을 수도 없을 수도 있어서
+ * onPageFinished 와 MutationObserver / 목록 서명 변화를 함께 본다.
  * ([KtxSelectors.SIGNATURE_SCOPES] — 머리말·광고까지 넣으면 좌석과 무관한 변화에 반응한다)
  */
 class KtxWebViewHost(
@@ -61,6 +80,21 @@ class KtxWebViewHost(
      * 덮고 있어도 버튼은 눌린다. 사용자가 팝업을 보고 있는 동안에는 누르지 않는다.
      */
     private val isPopupOpen: () -> Boolean = { false },
+    /**
+     * 문서마다 한 번, `100vh` 보정 결과를 밖으로 알린다. (§38-10)
+     *
+     * 로그에 남겨야 하는 이유는 이 보정이 **조용히** 동작하기 때문이다. 창이 다시
+     * 뜨는지만 봐서는 보정이 걸렸는지, 애초에 멀쩡했는지 구분할 수 없다.
+     */
+    private val onViewportFix: (String) -> Unit = {},
+    /**
+     * 메인 화면에서 로그인 여부를 확인한 결과를 밖으로 알린다. (§27-2)
+     *
+     * 이 확인은 사용자가 아무것도 누르지 않은 사이에 조용히 일어나고, 결과에 따라
+     * **화면이 바뀐다.** 왜 로그인 화면으로 갔는지(또는 왜 안 갔는지) 가 남는 곳은
+     * 이 로그뿐이다.
+     */
+    private val onLoginRedirect: (String) -> Unit = {},
 ) : PageHost {
 
     /**
@@ -85,6 +119,20 @@ class KtxWebViewHost(
     override val currentUrl: String?
         get() = _pageUrl.value ?: webView.url
 
+    /**
+     * 메인 화면 로그인 확인([guardMainPageLogin])이 도는 자리. (§27-2)
+     *
+     * 감시 루프(ViewModel 의 scope)와 섞지 않는다. 이 확인은 감시와 무관하게
+     * **메인 문서를 받을 때마다** 일어나고, 감시가 꺼져 있는 동안에도 돌아야 한다.
+     */
+    private val loginGuardScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+
+    /** 직전 문서의 확인. 새 문서가 시작되면 버린다 — 그 판정은 이미 남의 페이지 것이다. */
+    private var loginGuardJob: Job? = null
+
+    /** 마지막으로 로그인 화면으로 보낸 시각. 되튐(main↔login)을 끊는 데만 쓴다. */
+    private var lastLoginRedirectAt = 0L
+
     init {
         webView.webViewClient = object : WebViewClient() {
 
@@ -92,12 +140,22 @@ class KtxWebViewHost(
                 _isLoading.value = true
                 _pageUrl.value = url
                 navigationStarted = true
+                // 앞 문서의 로그인 확인은 여기서 끝난다. 늦게 온 판정으로 새 문서를
+                // 끌고 가면, 사용자가 이미 다른 화면에 있는데 로그인으로 튕긴다.
+                loginGuardJob?.cancel()
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 _isLoading.value = false
                 _pageUrl.value = url
+                // 문서가 바뀔 때마다 다시 걸어야 한다. 새로고침하면 window 째로 사라진다.
+                repairViewportUnits()
+                resetScrollTop()
                 outcomes.trySend(PageOutcome.Finished(url))
+                // 메인에 닿았을 때만 로그인 여부를 본다. 다른 화면은 건드리지 않는다. (§27-2)
+                if (KtxSelectors.isMainPage(url)) {
+                    loginGuardJob = loginGuardScope.launch { guardMainPageLogin() }
+                }
             }
 
             override fun onReceivedError(
@@ -118,59 +176,281 @@ class KtxWebViewHost(
         }
     }
 
+    /**
+     * 시작 페이지를 연다. **WebView 가 높이를 얻은 뒤에** 연다. (DESIGN.md §38-10)
+     *
+     * 크기가 0 인 WebView 로 문서를 받으면 뷰포트 단위(`vh`)가 0 으로 잡히고,
+     * 코레일의 역/날짜 선택 레이어는 `height:100vh` 라 통째로 납작해진다 —
+     * 열려 있는데 높이 0 이라 사람 눈에는 "아무 반응 없음" 이다.
+     *
+     * 기다리는 곳이 여기인 이유는 **부르는 곳이 하나가 아니기 때문**이다.
+     * 첫 실행(아직 `setContent` 전이라 붙지 않았다)과 설정 화면의 [시작 페이지로]
+     * (그 화면이 떠 있는 동안 WebView 는 화면에서 떼어져 있다) 가 똑같이 위험하다.
+     * Activity 쪽에 두면 한쪽만 막힌다.
+     */
     override suspend fun loadStartUrl() {
         withContext(Dispatchers.Main) {
+            awaitViewportSize()
             drainOutcomes()
             webView.loadUrl(startUrl)
         }
     }
 
+    /**
+     * WebView 가 화면에 붙어 높이를 가질 때까지 기다린다. 메인 스레드에서 부른다.
+     *
+     * 배치는 여러 번 일어날 수 있으므로 높이가 0 인 동안에는 듣기만 한다.
+     * 끝내 크기가 생기지 않아도 [SIZE_WAIT_TIMEOUT_MS] 뒤에는 그냥 연다 —
+     * 페이지가 아예 안 뜨는 것보다는 낫다. (대원칙 6)
+     */
+    private suspend fun awaitViewportSize() {
+        if (isSized()) return
+        withTimeoutOrNull(SIZE_WAIT_TIMEOUT_MS) {
+            suspendCancellableCoroutine { continuation ->
+                val listener = object : View.OnLayoutChangeListener {
+                    override fun onLayoutChange(
+                        view: View,
+                        left: Int,
+                        top: Int,
+                        right: Int,
+                        bottom: Int,
+                        oldLeft: Int,
+                        oldTop: Int,
+                        oldRight: Int,
+                        oldBottom: Int,
+                    ) {
+                        if (!isSized()) return
+                        view.removeOnLayoutChangeListener(this)
+                        if (continuation.isActive) continuation.resume(Unit)
+                    }
+                }
+                webView.addOnLayoutChangeListener(listener)
+                continuation.invokeOnCancellation {
+                    // 취소는 아무 스레드에서나 온다. 제거는 메인으로 돌린다.
+                    webView.post { webView.removeOnLayoutChangeListener(listener) }
+                }
+            }
+        }
+    }
+
+    /** 문서를 받아도 되는 크기인가. 떼어진 WebView 는 높이가 남아 있어도 안 된다. */
+    private fun isSized(): Boolean = webView.isAttachedToWindow && webView.height > 0
+
+    /**
+     * 메인 화면에 닿았는데 **비로그인이면 로그인 화면으로 보낸다.** (DESIGN.md §27-2)
+     *
+     * 코레일은 로그인을 예매를 누른 **뒤에야** 요구한다(§27-1). 그래서 비로그인인 줄
+     * 모른 채 조회부터 하다가, 좌석이 열린 그 순간에 로그인 화면으로 튕기는 일이 생긴다.
+     * 그 자리에서 잃는 것이 가장 크므로 **아직 아무것도 안 한 메인에서** 미리 보낸다.
+     *
+     * 지키는 선:
+     *  - **메인에서만.** 조회 결과 화면에서 URL 을 갈아타면 사용자가 넣어 둔 조회 조건이
+     *    통째로 날아간다 (대원칙 4·5). [KtxSelectors.isMainPage] 가 참일 때만 불리고,
+     *    그때도 목록이 그려져 있으면 그만둔다.
+     *  - **확실할 때만.** [LoginState.LOGGED_OUT] 하나에만 반응한다. `UNKNOWN` 은 사이트
+     *    개편으로 마커를 놓친 것일 수 있어 그대로 둔다 (대원칙 6).
+     *  - **요청은 늘지 않는다.** 판정은 DOM 만 읽는다. 실제로 여는 것은 사용자가 눌러도
+     *    갈 수 있는 로그인 화면 한 번뿐이다 (대원칙 2 와 무관한 경로다).
+     *
+     * 되풀이해 읽는 이유는 코레일이 React SPA 이기 때문이다. `onPageFinished` 는 문서를
+     * 받은 시점이라 머리말이 아직 없을 수 있고(§38-9 와 같은 함정), 그때 한 번만 보면
+     * 언제나 `UNKNOWN` 이 되어 이 확인이 통째로 죽는다.
+     */
+    private suspend fun guardMainPageLogin() {
+        val script = KtxLoginScript.build()
+        var check = LoginCheck(LoginState.UNKNOWN, "확인 전")
+
+        var attempt = 0
+        while (attempt < LOGIN_GUARD_MAX_TRIES) {
+            if (attempt > 0) delay(LOGIN_GUARD_INTERVAL_MS)
+            check = KtxLoginParser.parse(evaluate(script))
+            if (check.state != LoginState.UNKNOWN) break
+            attempt++
+        }
+
+        if (check.state != LoginState.LOGGED_OUT) {
+            onLoginRedirect("메인 ${check.state} — 그대로 둔다 (${check.detail})")
+            return
+        }
+
+        // 되튐 방지. 로그인 직후 사이트가 메인으로 돌려보냈는데 머리말이 아직 비로그인인
+        // 채라면 main→login→main 을 무한히 오갈 수 있다.
+        val now = System.currentTimeMillis()
+        if (now - lastLoginRedirectAt < LOGIN_REDIRECT_COOLDOWN_MS) {
+            onLoginRedirect("메인 비로그인이지만 방금 보냈다 — 건너뜀")
+            return
+        }
+
+        // 목록이 떠 있으면 여기는 사용자가 조회해 둔 화면이다. 손대지 않는다.
+        val kind = evaluateJson(KtxParserScript.buildPageKindScript())
+        if (kind?.optBoolean("list") == true) {
+            onLoginRedirect("메인인데 목록이 떠 있다 — 그대로 둔다")
+            return
+        }
+
+        lastLoginRedirectAt = now
+        onLoginRedirect("메인 비로그인 → 로그인 화면 (${check.detail})")
+        withContext(Dispatchers.Main) {
+            drainOutcomes()
+            webView.loadUrl(KtxSelectors.LOGIN_URL)
+        }
+    }
+
+    /**
+     * 이 호스트가 벌여 둔 일을 정리한다. WebView 를 destroy 하기 **전에** 부른다.
+     *
+     * [loginGuardScope] 는 Activity 의 lifecycle 을 따르지 않으므로, 여기서 끊지 않으면
+     * 이미 파괴된 WebView 에 스크립트를 던지게 된다.
+     */
+    fun dispose() {
+        loginGuardScope.cancel()
+    }
+
+    /**
+     * 이 문서의 `100vh` 가 깨졌으면 되살린다. (§38-10)
+     *
+     * 스크립트가 스스로 판단한다 — `100vh` 와 `innerHeight` 가 어긋날 때만 손댄다.
+     * 멀쩡한 문서에서는 아무것도 하지 않으므로 조건 없이 매번 불러도 된다.
+     */
+    private fun repairViewportUnits() {
+        webView.evaluateJavascript(KtxParserScript.buildViewportFixScript()) { raw ->
+            val result = runCatching { JSONObject(raw.orEmpty()) }.getOrNull() ?: return@evaluateJavascript
+            onViewportFix(describeViewportFix(result))
+        }
+    }
+
+    /**
+     * 목록을 맨 위에서 보게 한다. **메인 스레드에서 부른다.** (§38-9)
+     *
+     * 새로고침은 브라우저가 직전 스크롤 위치를 되살리는데, SPA 라 그 시점의 문서는
+     * 아직 목록이 없어 짧다. 짧은 문서에 예전 오프셋을 되살리면 문서 끝에 붙고,
+     * 이어서 목록이 그려져도 그 자리에 남아 **갱신할 때마다 화면이 맨 밑으로 튄다.**
+     *
+     * JS 쪽에서 되살리기를 끄고 올리며([KtxParserScript.buildScrollTopScript]),
+     * 뷰의 스크롤도 함께 0 으로 둔다 — WebView 가 자체적으로 되살려 둔 오프셋이
+     * 남아 있을 수 있다. 요청은 나가지 않는다.
+     */
+    private fun resetScrollTop() {
+        webView.scrollTo(0, 0)
+        webView.evaluateJavascript(KtxParserScript.buildScrollTopScript(), null)
+    }
+
+    /**
+     * 페이지를 통째로 다시 불러 결과를 갱신한다. **브라우저의 F5 와 같다.** (§10, §38-9)
+     *
+     * 예전에는 결과 화면의 [열차조회] 버튼 좌표에 진짜 터치를 내려보냈다.
+     * **모바일 폭에서는 그 버튼이 존재하지 않는다.** `div.btnWrap.btn_box` 가
+     * `display:none` 이라 버튼의 rect 가 0×0 이고, 옆에 보이는 것은 눌러선 안 되는
+     * `다음날 (…) 조회` 뿐이다. 누를 수 있는 버튼이 없으니 누르는 방식은 성립하지 않는다.
+     *
+     * 새로고침이 조회 조건을 날리지 않는 이유는 조건이 DOM 이 아니라
+     * `localStorage["LS_TICKET_GENERAL"]` 에 들어 있기 때문이다. 다시 불러오면
+     * SPA 가 그 값으로 같은 조회를 스스로 되풀이한다. (§38-9)
+     *
+     * 대신 값이 하나 비싸졌다. 한 사이클이 **문서 + 번들 + 조회 API** 전체가 되어
+     * AJAX 재조회보다 요청이 훨씬 크다. 간격을 좁히지 말 것. (대원칙 2)
+     */
     override suspend fun requery(
         timeoutMs: Long,
         settleTimeoutMs: Long,
         onClick: (String) -> Unit,
     ): PageOutcome {
         // 팝업이 열려 있으면 이번 차례는 아무것도 하지 않는다. 요청도 나가지 않는다.
+        // 새로고침은 사용자가 팝업에서 고르던 것까지 통째로 날린다.
         if (isPopupOpen()) return PageOutcome.Deferred("팝업 창이 열려 있음")
+
+        // 사람이 볼 수 있을 때만 갱신한다. 화면에 없는 WebView 를 새로고침하는 것은
+        // 사람의 조작에서 나올 수 없는 요청이다. (대원칙 1 의 따름정리)
+        val surface = readSurface()
+        if (!surface.usable) {
+            return PageOutcome.NotTappable("WebView 가 화면에 없음 (${surface.describe()})")
+        }
 
         drainOutcomes()
         navigationStarted = false
 
-        // 1) 클릭 전 상태 기록 (MutationObserver 설치 + 목록 서명)
-        val baseline = evaluateJson(KtxParserScript.buildObserverScript())
-        val baselineSig = baseline?.optString("sig").orEmpty()
-        val observing = baseline?.optBoolean("observing") ?: false
+        // 새로고침 전 목록 상태. 갱신되었는지 비교하는 기준이자 로그 재료다.
+        val before = evaluateJson(KtxParserScript.buildPageKindScript())
+        val beforeSig = before?.optString("sig").orEmpty()
 
-        // 2) 누르려면 WebView 가 실제로 화면에 떠 있어야 한다.
-        //    (사람이 못 누르는 상태면 이 앱도 누르지 않는다)
-        val surface = readSurface()
-        if (!surface.usable) {
-            return PageOutcome.NotTappable("WebView 를 누를 수 없음 (${surface.describe()})")
+        // 나가는 이력 항목에 걸어 둔다. 새로고침이 시작된 뒤에는 늦다. (§38-9)
+        evaluate(KtxParserScript.buildScrollTopScript())
+
+        withContext(Dispatchers.Main) { webView.reload() }
+        onClick(describeReload(before, surface))
+
+        return awaitReloaded(timeoutMs, settleTimeoutMs, beforeSig)
+    }
+
+    /**
+     * 새로고침이 **목록이 다시 그려진 상태**까지 갔는지 기다린다.
+     *
+     * 두 단계로 나뉜다. 한 단계로 합칠 수 없다.
+     *  1. `onPageFinished` — 문서를 받은 시점. 여기서는 아직 목록이 없다.
+     *  2. 목록 렌더링 — 코레일은 React SPA 라 문서를 받은 **뒤에** 번들이 돌고
+     *     조회 API 를 쳐서 `li.tckList` 를 그린다. 1 에서 바로 분석하면
+     *     좌석이 있어도 `NO_TRAIN` 으로 읽는다.
+     *
+     * 2 를 못 보고 시간이 다 되어도 실패로 단정하지 않는다. 결과가 0건인 조회일 수도
+     * 있어서, 분석은 한 번 해 보게 [PageOutcome.Settled] 로 넘긴다. (대원칙 6)
+     */
+    /**
+     * `onPageFinished` 하나만 기다린다.
+     *
+     * [PageOutcome.Finished] / [PageOutcome.Failed] 를 그대로 돌려주고,
+     * 시간이 다 되면 [PageOutcome.Settled] 를 돌려준다.
+     */
+    private suspend fun awaitPageFinished(timeoutMs: Long): PageOutcome {
+        val startedAt = System.currentTimeMillis()
+        while (true) {
+            when (val event = outcomes.tryReceive().getOrNull()) {
+                is PageOutcome.Failed -> return event
+                is PageOutcome.Finished -> return event
+                else -> Unit
+            }
+            if (System.currentTimeMillis() - startedAt >= timeoutMs) {
+                return PageOutcome.Settled("새로고침 후 로딩이 끝나지 않음")
+            }
+            delay(POLL_INTERVAL_MS)
         }
+    }
 
-        // 3) 버튼의 화면 좌표를 찾는다. 이 단계는 아무것도 누르지 않는다.
-        val located = evaluateJson(
-            KtxParserScript.buildLocateScript(surface.width, surface.height),
-        ) ?: return PageOutcome.ButtonNotFound("스크립트 실행 실패")
+    private suspend fun awaitReloaded(
+        timeoutMs: Long,
+        settleTimeoutMs: Long,
+        beforeSig: String,
+    ): PageOutcome {
+        // 1) 문서 로딩이 끝나기를 기다린다. reload 는 반드시 화면 전환을 만든다.
+        val loaded = awaitPageFinished(timeoutMs)
+        if (loaded !is PageOutcome.Finished) return loaded
+        val loadedUrl = loaded.detail
 
-        if (!located.optBoolean("found")) return buttonNotFound(located)
-        if (!located.optBoolean("tappable")) return notTappable(located, surface)
+        // 2) SPA 가 목록을 다시 그리기를 기다린다. 읽기만 하므로 요청은 나가지 않는다.
+        val renderStartedAt = System.currentTimeMillis()
+        var last = "목록 확인 결과 없음"
+        while (true) {
+            (outcomes.tryReceive().getOrNull() as? PageOutcome.Failed)?.let { return it }
 
-        val point = tapPointOf(located)
-            ?: return PageOutcome.NotTappable("좌표를 읽지 못함 (${located.optString("rect")})")
+            val kind = evaluateJson(KtxParserScript.buildPageKindScript())
+            if (kind != null) {
+                val rows = kind.optInt("rows")
+                val sig = kind.optString("sig")
+                last = "list=${kind.optBoolean("list")} rows=$rows sig=$beforeSig→$sig"
+                if (kind.optBoolean("list") && rows > 0) {
+                    // 렌더링이 끝나기 전에 읽지 않도록 잠깐 기다린다.
+                    delay(SETTLE_GRACE_MS)
+                    // 목록이 그려지며 문서 높이가 늘어난 뒤 한 번 더. `onPageFinished`
+                    // 시점에는 문서가 짧아 그때 올려 둔 것만으로는 부족하다. (§38-9)
+                    withContext(Dispatchers.Main) { resetScrollTop() }
+                    return PageOutcome.Updated("새로고침 $last")
+                }
+            }
 
-        // 4) 그 자리를 진짜로 누른다.
-        val tap = tap(point.first, point.second)
-        val confirm = evaluateJson(KtxParserScript.buildTapConfirmScript())
-        onClick(describeTap(located, tap, confirm, observing))
-
-        if (!tap.delivered) {
-            // 터치가 WebView 에 전달조차 되지 않았다. 조회 요청은 나가지 않았다.
-            return PageOutcome.NotTappable("터치가 전달되지 않음 (${tap.describe()})")
+            if (System.currentTimeMillis() - renderStartedAt >= settleTimeoutMs) {
+                return PageOutcome.Settled("$last / url=${loadedUrl.takeLast(60)}")
+            }
+            delay(POLL_INTERVAL_MS)
         }
-
-        // 5) 화면 전환 또는 DOM 갱신을 기다린다.
-        return awaitSettled(timeoutMs, settleTimeoutMs, baselineSig)
     }
 
     /**
@@ -540,6 +820,21 @@ class KtxWebViewHost(
             }
         }
 
+    /**
+     * 역 선택 창 진단. (§38-10)
+     *
+     * 세 가지가 전부 "아무 반응 없음" 으로 보이는데, 구분하지 못하면 고칠 수 없다.
+     *  - 탭 기록 자체가 없다 → 손가락이 그 요소에 닿지 않았다
+     *  - `역버튼` 인데 `핸들러=안돎` → 이벤트가 React 까지 가지 못했다
+     *  - `핸들러=돎` 인데 `모달=0→0` → 사이트가 일부러 막았다 (`stationDisabled`)
+     *  - `모달=0→1` → 창은 만들어졌다. 남은 것은 보이느냐의 문제다
+     */
+    override suspend fun probeStationPopup(): String {
+        val probe = evaluateJson(KtxParserScript.buildStationProbeScript())
+            ?: return "스크립트가 돌지 않음 (페이지가 아직 안 떴을 수 있음)"
+        return describeStationProbe(probe)
+    }
+
     /** 스크립트가 돌려준 JSON 객체. 실행 실패(null/undefined)면 null. */
     private suspend fun evaluateJson(script: String): JSONObject? {
         val raw = evaluate(script) ?: return null
@@ -556,30 +851,114 @@ class KtxWebViewHost(
     // ---------------------------------------------------------------- 로그 문구
 
     /**
-     * "조회" 가 들어간 요소를 찾아 왜 못 눌렀는지까지 남긴다.
-     * 로그만 보고 [KtxSelectors] 를 고칠 수 있어야 한다.
+     * `100vh` 보정 결과를 로그 한 줄로. (§38-10)
+     *
+     * `보정함 100vh=0 → 460` 이면 이 WebView 의 뷰포트 단위가 깨져 있었다는 뜻이고,
+     * `정상 100vh=460` 이면 손댈 것이 없었다는 뜻이다. 역 선택 창이 여전히 안 뜬다면
+     * 원인이 다른 곳이라는 것을 이 줄로 가른다.
      */
-    private fun buttonNotFound(located: JSONObject): PageOutcome.ButtonNotFound {
-        val near = located.optJSONArray("near")
-            ?.let { array -> (0 until array.length()).map { array.optString(it) } }
-            .orEmpty()
-        return PageOutcome.ButtonNotFound(
-            buildString {
-                append("요소 ${located.optInt("scanned")}개 확인, 조회 버튼 없음")
-                append(" / ").append(located.optString("counts"))
-                append(" / url=").append(located.optString("url").takeLast(60))
-                val title = located.optString("title")
-                if (title.isNotBlank()) append(" / title=").append(title.take(40))
-                if (near.isNotEmpty()) append(" / 근접: ").append(near.joinToString(" | "))
-                val bodyHead = located.optString("bodyHead")
-                if (bodyHead.isNotBlank()) append(" / body=").append(bodyHead)
-            },
-        )
+    private fun describeViewportFix(result: JSONObject): String {
+        val vh = result.optInt("vh", -1)
+        val ih = result.optInt("ih", -1)
+        return if (result.optBoolean("applied")) {
+            "보정함 100vh=$vh → ${ih}px"
+        } else {
+            "손대지 않음(${result.optString("reason")}) 100vh=$vh innerHeight=$ih"
+        }
     }
 
-    /** 버튼은 찾았지만 손가락이 닿지 않는 상태. 무엇이 막고 있는지 남긴다. */
-    private fun notTappable(located: JSONObject, surface: Surface): PageOutcome.NotTappable =
-        PageOutcome.NotTappable(tapBlockedDetail(located, surface))
+    /** [probeStationPopup] 의 결과를 로그 한 줄로 만든다. 사람이 읽을 것이다. */
+    private fun describeStationProbe(probe: JSONObject): String = buildString {
+        append("rows=").append(probe.optInt("rows"))
+        append(" 모달=").append(probe.optInt("modals"))
+        probe.optString("topModal").takeIf { it.isNotBlank() }?.let {
+            append(" 맨위=\"").append(it).append("\"")
+        }
+        probe.optJSONArray("view")?.let {
+            append(" 뷰=").append(it.optInt(0)).append("x").append(it.optInt(1))
+        }
+        // 코레일 레이어는 `height: 100vh` 다. innerHeight 와 어긋나면 그것이 원인이다.
+        append(" 100vh=").append(probe.optInt("vh100", -1))
+        append(" cH=").append(probe.optInt("clientH", -1))
+
+        val buttons = probe.optJSONArray("buttons")
+        if (buttons == null || buttons.length() == 0) {
+            append(" | 역 버튼 없음")
+        } else {
+            for (i in 0 until buttons.length()) {
+                val button = buttons.optJSONObject(i) ?: continue
+                append(" | ").append(button.optString("t").ifBlank { "역버튼$i" })
+                append(" ").append(button.optJSONArray("box"))
+                if (!button.optBoolean("vis")) append(" 숨김")
+                if (button.optBoolean("covered")) {
+                    append(" 가려짐(").append(button.optString("hit")).append(")")
+                }
+            }
+        }
+
+        probe.optJSONObject("modal")?.let { append(describeOpenModal(it)) }
+
+        val taps = probe.optJSONArray("taps")
+        if (taps == null || taps.length() == 0) {
+            append(" | 탭 기록 없음 — 역 버튼을 눌러 본 뒤 다시 진단")
+            return@buildString
+        }
+        for (i in 0 until taps.length()) {
+            val tap = taps.optJSONObject(i) ?: continue
+            append(" | 탭 ").append(tap.optString("on"))
+            append(if (tap.optBoolean("station")) " 역버튼" else " 딴곳")
+            if (!tap.optBoolean("trusted")) append(" 합성")
+            append(" 핸들러=").append(handlerVerdict(tap))
+            append(" 모달=").append(tap.optInt("before")).append("→").append(tap.optInt("after"))
+        }
+    }
+
+    /**
+     * 떠 있는데 안 보이는 모달을 설명한다. (§38-10, 4번 갈래)
+     *
+     * 여기까지 왔다면 탭도 핸들러도 정상이다. 남은 것은 **왜 안 그려지는가** 뿐이라,
+     * 보이지 않게 만들 수 있는 것만 본다: 상자 / 스타일 / 실제로 맨 위에 있는지
+     * (`덮임`) / 조상 사슬. 조상을 보는 이유는 `position:fixed` 의 기준이
+     * `transform` 을 가진 조상에게 가로채이면 화면 밖으로 나가기 때문이다.
+     */
+    private fun describeOpenModal(modal: JSONObject): String = buildString {
+        append(" | 모달 ").append(modal.optJSONArray("box"))
+        append(" ").append(modal.optString("css"))
+        modal.optJSONArray("contentBox")?.let { append(" 내용").append(it) }
+        modal.optString("contentCss").takeIf { it.isNotBlank() }?.let { append(" ").append(it) }
+        if (!modal.optBoolean("inside")) {
+            append(" 덮임(").append(modal.optString("hit")).append(")")
+        }
+        modal.optJSONArray("scroll")?.let {
+            if (it.optInt(0) != 0 || it.optInt(1) != 0) append(" 스크롤").append(it)
+        }
+        modal.optString("chain").takeIf { it.isNotBlank() }?.let { append(" 조상 ").append(it) }
+    }
+
+    /**
+     * 그 탭에서 사이트의 `onClick` 이 돌았는지.
+     *
+     * 코레일 핸들러는 첫 줄이 `e.preventDefault()` 라 **돌기만 하면 반드시 참**이 된다.
+     * 아직 판정 전(`null`)인 것은 진단을 너무 빨리 두 번 누른 경우다.
+     */
+    private fun handlerVerdict(tap: JSONObject): String = when {
+        tap.isNull("prevented") -> "판정전"
+        tap.optBoolean("prevented") -> "돎"
+        else -> "안돎"
+    }
+
+    /** 무엇을 새로고침했는지. 갱신이 안 될 때 원인을 좁히는 데 쓴다. */
+    private fun describeReload(before: JSONObject?, surface: Surface): String = buildString {
+        append("새로고침(F5)")
+        if (before != null) {
+            append(" 이전 rows=").append(before.optInt("rows"))
+            append(" sig=").append(before.optString("sig"))
+            append(" url=").append(before.optString("url").takeLast(60))
+        } else {
+            append(" 이전 상태를 읽지 못함")
+        }
+        append(" / webview=").append(surface.describe())
+    }
 
     /** 좌표를 못 잡은 이유를 사람이 읽을 문장으로. 세 경로가 같은 형식을 쓴다. */
     private fun tapBlockedDetail(located: JSONObject, surface: Surface): String {
@@ -698,29 +1077,6 @@ class KtxWebViewHost(
         if (!tap.down || !tap.up) append(" / ").append(tap.describe())
     }
 
-    /** 어디를 어떻게 눌렀는지. 갱신이 안 될 때 원인을 좁히는 데 쓴다. */
-    private fun describeTap(
-        located: JSONObject,
-        tap: TapResult,
-        confirm: JSONObject?,
-        observing: Boolean,
-    ): String = buildString {
-        append("탭 (").append(tap.x.roundToInt()).append(",").append(tap.y.roundToInt())
-        append(") ").append(tap.holdMs).append("ms")
-        append(" ").append(located.optString("how")).append(" ").append(located.optString("by"))
-        val label = located.optString("label")
-        if (label.isNotBlank()) append(" [").append(label).append("]")
-        append(" <").append(located.optString("tag").lowercase())
-        val type = located.optString("type")
-        if (type.isNotBlank()) append(":").append(type)
-        append(">")
-        if (located.optBoolean("inList")) append(" inList")
-        append(" 후보=").append(located.optInt("candidates"))
-        appendClickConfirm(confirm)
-        if (!tap.down || !tap.up) append(" / ").append(tap.describe())
-        if (!observing) append(" (observer 없음)")
-    }
-
     /** 진짜 클릭이 목표까지 갔는지. 세 경로가 같은 형식으로 남긴다. */
     private fun StringBuilder.appendClickConfirm(confirm: JSONObject?) {
         when {
@@ -787,5 +1143,29 @@ class KtxWebViewHost(
          * 더 물러나면 사용자가 보던 화면에서 너무 멀어진다.
          */
         const val MAX_BACK_STEPS = 2
+
+        /**
+         * WebView 가 배치되기를 기다리는 상한. (§38-10)
+         * 화면 전환 한 프레임이면 충분한데, 넉넉히 두어도 첫 로딩만 늦어진다.
+         */
+        const val SIZE_WAIT_TIMEOUT_MS = 3_000L
+
+        /**
+         * 메인 화면 로그인 판정을 다시 읽어 보는 횟수와 간격. (§27-2)
+         *
+         * SPA 가 머리말을 그릴 때까지만 기다리면 된다. 요청이 나가지 않는 읽기라
+         * 늘려도 사이트에는 부담이 없지만, 판정이 늦으면 사용자가 이미 메인에서
+         * 무언가를 하고 있는데 화면이 바뀐다. 2초 안에 끝낸다.
+         */
+        const val LOGIN_GUARD_MAX_TRIES = 10
+        const val LOGIN_GUARD_INTERVAL_MS = 200L
+
+        /**
+         * 로그인 화면으로 보낸 뒤 다시 보내기까지의 최소 간격. (§27-2)
+         *
+         * 판정이 어긋나 main↔login 을 무한히 오가는 것만 끊는 값이다. 사용자가 로그인하지
+         * 않고 뒤로 돌아온 경우에는 한 번 그냥 통과한다 — 가두는 것이 목적이 아니다.
+         */
+        const val LOGIN_REDIRECT_COOLDOWN_MS = 5_000L
     }
 }

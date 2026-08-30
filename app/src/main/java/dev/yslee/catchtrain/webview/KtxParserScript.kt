@@ -64,39 +64,6 @@ object KtxParserScript {
     }
 
     /**
-     * 결과 화면의 [열차조회] 버튼이 **화면 어디에 있는지** 알아낸다. (§10, §38-5)
-     *
-     * 이 스크립트는 버튼을 누르지 않는다. 좌표만 알려준다.
-     * 실제 클릭은 Kotlin 쪽에서 [android.view.MotionEvent] 를 내려보내는,
-     * 즉 **사용자가 그 위치를 손가락으로 누르는 것과 같은** 방식으로 한다.
-     *
-     * **문구는 완전일치로만 본다.** 바로 옆에 `다음날 (26년09월02일) 조회` 버튼이 있어서
-     * "조회" 부분일치로 고르면 사용자가 보던 날짜가 아닌 **다음날을 조회해 버린다.** (§38-5)
-     * 그래서 selector 로 잡혔더라도 문구가 완전일치하지 않으면 후보로 올리지 않는다.
-     * 찾지 못하면 다른 방법으로 대체하지 않고 그대로 실패를 올린다.
-     *
-     * 반환 형식:
-     * ```json
-     * {"found": true, "tappable": true, "x": 540.0, "y": 812.0, "at": "0.5,0.5", "label": "열차조회"}
-     * {"found": true, "tappable": false, "reason": "COVERED|OFF_SCREEN|ZERO_SIZE"}
-     * {"found": false, "reason": "BUTTON_NOT_FOUND", "scanned": 12, "near": ["..."]}
-     * ```
-     */
-    fun buildLocateScript(viewWidthPx: Int, viewHeightPx: Int): String {
-        val config = buildString {
-            append("{")
-            append("selectors:").append(jsArray(KtxSelectors.RESEARCH_BUTTON)).append(",")
-            append("texts:").append(jsArray(KtxSelectors.RESEARCH_TEXTS_EXACT)).append(",")
-            append("exclude:").append(jsArray(KtxSelectors.RESEARCH_TEXT_EXCLUDE)).append(",")
-            append("scopes:").append(jsArray(KtxSelectors.SEARCH_FORM_SCOPES))
-            append("}")
-        }
-        return LOCATE_TEMPLATE.withSignature().withTapPoint()
-            .replace(CONFIG_PLACEHOLDER, config)
-            .replace(VIEW_PLACEHOLDER, "{w:$viewWidthPx,h:$viewHeightPx}")
-    }
-
-    /**
      * **예매 1단계.** 그 열차의 그 좌석 칸(`price_box > a`)이 화면 어디에 있는지. (§38-6)
      *
      * 탐색 범위가 재조회와 결정적으로 다르다. 조회 버튼은 화면에 하나뿐이라 문서 전체에서
@@ -223,7 +190,99 @@ object KtxParserScript {
      */
     fun buildPageKindScript(): String = PAGE_KIND_TEMPLATE.withSignature()
 
+    /**
+     * **진단 전용.** 역 선택 창이 왜 안 뜨는지 한 번에 좁힌다. (§38-10)
+     *
+     * 감시 경로에서는 부르지 않는다. 아무것도 누르지 않고 읽기만 하며, `document` 에
+     * **캡처 단계 click 리스너 하나**를 건다 (한 문서당 한 번). 사용자가 실제로 역 버튼을
+     * 손으로 누른 뒤 이 스크립트를 다시 돌리면 그 탭이 어디까지 갔는지가 나온다.
+     *
+     * 사이트 쪽 코드는 이렇게 생겼다 (번들 실측):
+     * ```js
+     * onClick: function (e) { e.preventDefault(); props.stationDisabled || (setOpen(true), ...) }
+     * ```
+     * **핸들러가 돌았는가**는 `defaultPrevented` 로, **창이 만들어졌는가**는 모달 개수로
+     * 갈린다. 그 둘을 나눠 보는 것이 이 스크립트의 전부다. 한쪽만 보면
+     * "아무 반응 없음" 이 셋 중 무엇인지 알 수 없다.
+     *
+     * 반환:
+     * ```json
+     * {"rows":10,"modals":0,"topModal":"","armed":true,"view":[375,812,2.75],
+     *  "buttons":[{"t":"출발역 선택","box":[26,180,138,37],"vis":true,
+     *              "hit":"p.","covered":true}],
+     *  "taps":[{"on":"a.btn_pop","station":true,"trusted":true,
+     *           "prevented":true,"before":0,"after":0}]}
+     * ```
+     */
+    fun buildStationProbeScript(): String =
+        STATION_PROBE_TEMPLATE.withSignature().replace(CONFIG_PLACEHOLDER, stationProbeConfig())
+
+    /**
+     * **`100vh` 가 0 으로 잡힌 문서를 되살린다.** (§38-10)
+     *
+     * 코레일의 역/날짜/인원 선택 창은 `.layerPopup { height: 100vh }` 하나로 화면을
+     * 채우고, 오버레이에 인라인 기하가 없어 **대체 경로가 없다**
+     * ([KtxSelectors.VIEWPORT_HEIGHT_LAYER]). WebView 에서 `100vh` 가 0 이 되면
+     * 창은 열려도 높이 0 이라 사람 눈에는 아무 반응이 없다.
+     *
+     * 실측(2026-08-29, 411×460): `window.innerHeight` 는 460 인데 `100vh` 만 0 이었다.
+     * 두 값이 어긋나는 것이 조건이라, **어긋났을 때만** 픽셀 높이를 덮어쓴다.
+     * 정상인 WebView 에서는 아무것도 하지 않는다 — 멀쩡한 페이지를 건드리지 않는다.
+     *
+     * 하는 일은 스타일 시트 한 장과 `resize` 리스너 하나가 전부다.
+     * **사이트 코드를 부르지 않고 요청도 내지 않는다.** 화면 회전이나 앱 패널이
+     * 여닫혀 WebView 높이가 바뀌면 리스너가 값을 다시 맞춘다.
+     *
+     * 문서마다 새로 걸어야 한다. 새로고침하면 `window` 째로 사라지므로
+     * [KtxWebViewHost] 가 `onPageFinished` 마다 다시 부른다.
+     *
+     * 반환: `{"applied":true,"vh":0,"ih":460}` / `{"applied":false,"reason":"ok",…}`
+     */
+    fun buildViewportFixScript(): String =
+        VIEWPORT_FIX_TEMPLATE.replace(CONFIG_PLACEHOLDER, viewportFixConfig())
+
+    /**
+     * **새로고침 뒤 목록을 맨 위에서 보게 한다.** (§38-9)
+     *
+     * 브라우저는 새로고침할 때 직전 스크롤 위치를 되살린다(`history.scrollRestoration`).
+     * 코레일은 SPA 라 문서를 받은 시점에는 목록이 아직 없어 문서가 짧고, 그 짧은 문서에
+     * 예전 오프셋을 되살리면 **문서 끝으로 잘려 붙는다.** 이어서 목록이 그려지며 높이가
+     * 늘어나도 브라우저의 스크롤 앵커링이 그 자리를 붙들어, 사용자 눈에는 갱신할 때마다
+     * 화면이 맨 밑으로 튀는 것으로 보인다.
+     *
+     * 그래서 되살리기를 **끄고**(`manual`) 맨 위로 올린다. 문서마다 새로 걸어야 하므로
+     * 새로고침 직전(나가는 이력 항목)과 새 문서 양쪽에서 부른다.
+     *
+     * 읽기와 스크롤이 전부다. **사이트 코드를 부르지 않고 요청도 내지 않는다.**
+     *
+     * 반환: `{"before":1840,"after":0,"restore":"auto"}`
+     */
+    fun buildScrollTopScript(): String = SCROLL_TOP_TEMPLATE
+
     // ---------------------------------------------------------------- 조립 도구
+
+    /** 뷰포트 보정 스크립트가 쓰는 값. */
+    private fun viewportFixConfig(): String = buildString {
+        append("{")
+        append("layers:").append(jsArray(KtxSelectors.VIEWPORT_HEIGHT_LAYER)).append(",")
+        append("varName:").append(jsString(VIEWPORT_FIX_VAR)).append(",")
+        append("styleId:").append(jsString(VIEWPORT_FIX_STYLE_ID)).append(",")
+        append("tolerance:").append(VIEWPORT_FIX_TOLERANCE_PX)
+        append("}")
+    }
+
+    /** 진단 스크립트가 쓰는 값. selector 는 전부 [KtxSelectors] 에서 온다. */
+    private fun stationProbeConfig(): String = buildString {
+        append("{")
+        append("buttons:").append(jsArray(KtxSelectors.STATION_POPUP_BUTTON)).append(",")
+        append("modals:").append(jsArray(KtxSelectors.PAGE_MODAL)).append(",")
+        append("maxTaps:").append(PROBE_MAX_TAPS).append(",")
+        append("settleMs:").append(PROBE_SETTLE_MS).append(",")
+        append("textChars:").append(PROBE_TEXT_CHARS).append(",")
+        append("chainDepth:").append(PROBE_CHAIN_DEPTH).append(",")
+        append("cssValueChars:").append(PROBE_CSS_VALUE_CHARS)
+        append("}")
+    }
 
     /** 1·2단계가 공유하는 대상 정보. 같은 값을 세 스크립트가 똑같이 읽어야 한다. */
     private fun targetConfig(target: ReserveTarget): String = buildString {
@@ -260,6 +319,38 @@ object KtxParserScript {
     private const val SIGNATURE_PLACEHOLDER = "/*__SIGNATURE__*/"
     private const val VIEW_PLACEHOLDER = "/*__VIEW__*/"
     private const val TAPPOINT_PLACEHOLDER = "/*__TAPPOINT__*/"
+
+    /** 진단용. 최근 탭 몇 개까지 들고 있을지. 로그 한 줄에 담기는 만큼만. */
+    private const val PROBE_MAX_TAPS = 3
+
+    /** 탭 뒤 모달이 그려지기를 기다리는 시간. react-modal 은 즉시 붙는다. */
+    private const val PROBE_SETTLE_MS = 700
+
+    /** 떠 있는 모달의 본문을 몇 자까지 남길지. 차단/안내 문구를 알아볼 정도면 된다. */
+    private const val PROBE_TEXT_CHARS = 80
+
+    /**
+     * 모달의 조상을 몇 대까지 볼지. `ReactModalPortal` → `body` → `html` 이면 충분하다.
+     * `position:fixed` 의 기준을 가로채는 것은 이 사슬 안에 있다.
+     */
+    private const val PROBE_CHAIN_DEPTH = 3
+
+    /** `transform` 같은 값은 matrix 로 길게 나온다. 알아볼 만큼만 남긴다. */
+    private const val PROBE_CSS_VALUE_CHARS = 40
+
+    /** 보정된 뷰포트 높이를 담는 CSS 변수. 이름이 사이트 것과 겹치면 안 된다. */
+    private const val VIEWPORT_FIX_VAR = "--catchtrain-vh"
+
+    /** 보정용 `<style>` 의 id. 같은 문서에 두 번 넣지 않기 위한 표식이다. */
+    private const val VIEWPORT_FIX_STYLE_ID = "catchtrain-vh-fix"
+
+    /**
+     * `100vh` 와 `innerHeight` 가 이만큼까지 어긋나는 것은 정상으로 본다.
+     *
+     * 스크롤바·반올림·브라우저 바 때문에 1~2px 차이는 흔하다. 실제 고장은 0 대 460
+     * 처럼 자릿수가 다르므로, 넉넉히 잡아도 오검출되지 않는다.
+     */
+    private const val VIEWPORT_FIX_TOLERANCE_PX = 4
 
     /**
      * 모든 스크립트가 공유하는 바탕 블록. **selector 를 자기 안에 들고 있다.**
@@ -579,205 +670,6 @@ object KtxParserScript {
         }
         try { document.addEventListener('click', onClick, true); } catch (e) { /* 무시 */ }
       }
-    """.trimIndent()
-
-    /**
-     * 재조회 버튼 탐색 스크립트.
-     *
-     * 후보를 점수로 고른 뒤, **그 버튼을 실제로 누를 수 있는 화면 좌표**를 돌려준다.
-     * 아무것도 클릭하지 않는다. (클릭은 Kotlin 쪽 진짜 터치가 담당한다)
-     *
-     * 좌표는 두 단계로 검증한다.
-     *  1) 화면(visual viewport) 안에 들어와 있는가 — 밖이면 손가락도 닿지 않는다.
-     *  2) document.elementFromPoint 로 그 지점의 최상위 요소가 정말 이 버튼인가 —
-     *     고정 헤더나 배너가 덮고 있으면 사람이 눌러도 그 요소가 눌린다.
-     *
-     * SRT 판과 한 가지가 다르다. **문구가 완전일치하지 않으면 후보로 올리지 않는다.**
-     * SRT 에서는 selector 로 잡힌 것을 문구 없이도 인정했지만(이미지 버튼 대비),
-     * 코레일은 같은 selector 에 `다음날 (…) 조회` 버튼이 함께 걸리므로 그 관용이
-     * 곧바로 **엉뚱한 날짜 조회**가 된다. (§38-5)
-     */
-    private val LOCATE_TEMPLATE = """
-    (function () {
-      var CFG = /*__CONFIG__*/;
-      var VIEW = /*__VIEW__*/;
-      /*__SIGNATURE__*/
-      /*__TAPPOINT__*/
-
-      var scanned = 0;
-
-      // 편성 안의 버튼(좌석 칸 등)일 가능성. 하드 제외가 아니라 감점 요소로만 쓴다.
-      function inTrainList(el) {
-        var rows = ktxRows();
-        for (var i = 0; i < rows.length; i++) {
-          if (rows[i].contains && rows[i].contains(el)) return true;
-        }
-        return false;
-      }
-
-      function excluded(label) {
-        for (var i = 0; i < CFG.exclude.length; i++) {
-          if (label.indexOf(ktxNorm(CFG.exclude[i])) >= 0) return true;
-        }
-        return false;
-      }
-
-      /** **완전일치.** 부분일치를 쓰면 옆의 `다음날 … 조회` 를 누른다. (§38-5) */
-      function textRank(label) {
-        for (var i = 0; i < CFG.texts.length; i++) {
-          if (label === ktxNorm(CFG.texts[i])) return i;
-        }
-        return -1;
-      }
-
-      function scopeRank(el) {
-        for (var i = 0; i < CFG.scopes.length; i++) {
-          var scope;
-          try { scope = document.querySelector(CFG.scopes[i]); } catch (e) { continue; }
-          if (scope && scope.contains(el)) return i;
-        }
-        return CFG.scopes.length;
-      }
-
-      /**
-       * 후보를 모두 모아 점수로 고른다.
-       *
-       * 보이지 않는 요소도 후보로 남기되 크게 감점한다. 진짜 터치는 화면에 보이는 것만
-       * 누를 수 있으므로 안 보이는 후보가 뽑히면 결국 tappable=false 로 끝나지만,
-       * ktxVisible() 판정이 틀렸을 때 진짜 버튼을 통째로 버리지 않기 위해서다.
-       */
-      var candidates = [];
-      var seen = [];
-
-      function addCandidate(el, how, by) {
-        if (!el || el.nodeType !== 1) return;
-        if (seen.indexOf(el) >= 0) return;
-        seen.push(el);
-        scanned++;
-
-        var label = ktxLabelOf(el);
-        if (excluded(label)) return;
-        var rank = textRank(label);
-        if (rank < 0) return;
-
-        candidates.push({
-          el: el,
-          how: how,
-          by: by,
-          label: label,
-          rank: rank,
-          scope: scopeRank(el),
-          hidden: ktxVisible(el) ? 0 : 1,
-          inList: inTrainList(el) ? 1 : 0
-        });
-      }
-
-      function collect() {
-        for (var i = 0; i < CFG.selectors.length; i++) {
-          var list;
-          try { list = document.querySelectorAll(CFG.selectors[i]); } catch (e) { continue; }
-          for (var j = 0; j < list.length; j++) addCandidate(list[j], 'selector', CFG.selectors[i]);
-        }
-        var nodes = document.querySelectorAll(
-          'a, button, input[type=submit], input[type=button], input[type=image], [role=button]');
-        for (var k = 0; k < nodes.length; k++) addCandidate(nodes[k], 'text', 'text');
-      }
-
-      // 앞의 조건이 우선. 보이는 것 > 목록 밖 > 조회 영역 > 문구 > selector 경로
-      function better(a, b) {
-        if (a.hidden !== b.hidden) return a.hidden < b.hidden;
-        if (a.inList !== b.inList) return a.inList < b.inList;
-        if (a.scope !== b.scope) return a.scope < b.scope;
-        if (a.rank !== b.rank) return a.rank < b.rank;
-        return a.how === 'selector' && b.how !== 'selector';
-      }
-
-      function pick() {
-        var best = null;
-        for (var i = 0; i < candidates.length; i++) {
-          if (best === null || better(candidates[i], best)) best = candidates[i];
-        }
-        return best;
-      }
-
-      /**
-       * 실패했을 때 "무엇이 있었고 왜 못 눌렀는지"를 남긴다.
-       * 로그만 보고 [KtxSelectors] 를 고칠 수 있어야 한다.
-       */
-      function diagnose() {
-        var nodes = document.querySelectorAll('a, button, input, [role=button]');
-        var out = [];
-        for (var i = 0; i < nodes.length && out.length < 5; i++) {
-          var label = ktxLabelOf(nodes[i]);
-          if (label.indexOf('조회') < 0) continue;
-          var note = nodes[i].tagName.toLowerCase();
-          var type = nodes[i].getAttribute ? nodes[i].getAttribute('type') : null;
-          if (type) note += ':' + type;
-          note += '[' + label.slice(0, 12) + ']';
-          if (!ktxVisible(nodes[i])) note += ' hidden';
-          if (excluded(label)) note += ' excluded';
-          if (inTrainList(nodes[i])) note += ' inList';
-          var cls = ktxClassOf(nodes[i]);
-          if (cls) note += ' .' + cls.split(/\s+/).join('.');
-          out.push(note);
-        }
-        return out;
-      }
-
-      collect();
-      var found = pick();
-      if (found === null) {
-        // 버튼이 없는 이유는 대개 "selector 가 틀렸다"가 아니라
-        // "지금 보고 있는 화면이 조회 결과가 아니다" 다. (차단 안내 / 오류 화면 등)
-        // 그래서 어떤 문서를 보고 있었는지 함께 남긴다.
-        var body = '';
-        try { body = ktxNorm(document.body ? (document.body.innerText || '') : ''); } catch (e) { body = ''; }
-        return {
-          found: false,
-          reason: 'BUTTON_NOT_FOUND',
-          scanned: scanned,
-          near: diagnose(),
-          url: location.href,
-          title: document.title || '',
-          counts: 'a=' + document.querySelectorAll('a').length +
-                  ' button=' + document.querySelectorAll('button').length +
-                  ' li=' + ktxRows().length +
-                  ' iframe=' + document.querySelectorAll('iframe, frame').length,
-          bodyHead: body.slice(0, 120)
-        };
-      }
-
-      var point = ktxTapPoint(found.el);
-      var out = {
-        found: true,
-        how: found.how,
-        by: found.by,
-        label: found.label,
-        tag: found.el.tagName,
-        type: found.el.getAttribute ? (found.el.getAttribute('type') || '') : '',
-        hidden: found.hidden === 1,
-        inList: found.inList === 1,
-        candidates: candidates.length,
-        scanned: scanned,
-        rect: point.rect || ''
-      };
-
-      if (point.reason) {
-        out.tappable = false;
-        out.reason = point.reason;
-        out.covered = point.covered || '';
-        out.viewport = point.viewport || '';
-        out.url = location.href;
-        return out;
-      }
-
-      ktxArmConfirm(found.el);
-      out.tappable = true;
-      out.x = point.x;
-      out.y = point.y;
-      out.at = point.at;
-      return out;
-    })();
     """.trimIndent()
 
     /**
@@ -1242,6 +1134,278 @@ object KtxParserScript {
         url: location.href,
         title: document.title || ''
       };
+    })();
+    """.trimIndent()
+
+    /**
+     * 역 선택 버튼 진단. 읽기 + 캡처 리스너 하나. 아무것도 누르지 않는다. (§38-10)
+     *
+     * 리스너는 **캡처 단계**여야 한다. React 핸들러보다 먼저 들어와야
+     * "탭이 그 요소까지 갔는가" 와 "핸들러가 돌았는가" 를 구분할 수 있다.
+     * `defaultPrevented` 는 dispatch 가 끝나야 확정되므로 setTimeout 으로 미뤄 읽는다.
+     */
+    private val STATION_PROBE_TEMPLATE = """
+    (function () {
+      var CFG = /*__CONFIG__*/;
+      /*__SIGNATURE__*/
+
+      var BTN = CFG.buttons.join(',');
+      var MOD = CFG.modals.join(',');
+
+      function nameOf(el) {
+        if (!el) return 'none';
+        var cls = '';
+        if (el.className && typeof el.className === 'string') {
+          cls = el.className.trim().split(/\s+/).slice(0, 2).join('.');
+        }
+        return (el.tagName || '?').toLowerCase() + (cls ? '.' + cls : '');
+      }
+
+      function modalNodes() {
+        try { return document.querySelectorAll(MOD); } catch (e) { return []; }
+      }
+
+      function boxOf(el) {
+        var r = el.getBoundingClientRect();
+        return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+      }
+
+      /** 보이지 않게 만들 수 있는 속성만 추린다. 기본값인 것은 적지 않는다. */
+      function cssOf(el) {
+        var c = window.getComputedStyle(el);
+        var out = c.position + ' z=' + c.zIndex + ' op=' + c.opacity;
+        if (c.visibility !== 'visible') out += ' vis=' + c.visibility;
+        if (c.display !== 'block') out += ' disp=' + c.display;
+        if (c.overflow !== 'visible') out += ' of=' + c.overflow;
+        if (c.transform && c.transform !== 'none') {
+          out += ' tf=' + c.transform.slice(0, CFG.cssValueChars);
+        }
+        if (c.filter && c.filter !== 'none') out += ' flt=' + c.filter.slice(0, CFG.cssValueChars);
+        if (c.clipPath && c.clipPath !== 'none') {
+          out += ' clip=' + c.clipPath.slice(0, CFG.cssValueChars);
+        }
+        return out;
+      }
+
+      function onStation(el) {
+        try { return !!(el && el.closest && el.closest(BTN)); } catch (e) { return false; }
+      }
+
+      // 한 문서에 한 번만 건다. 새로고침으로 document 가 바뀌면 다시 건다.
+      var rec = window.__ktxStationProbe;
+      if (!rec || rec.doc !== document) {
+        rec = { doc: document, taps: [], armed: false };
+        window.__ktxStationProbe = rec;
+      }
+      if (!rec.armed) {
+        rec.armed = true;
+        document.addEventListener('click', function (e) {
+          var entry = {
+            on: nameOf(e.target),
+            station: onStation(e.target),
+            trusted: e.isTrusted === true,
+            prevented: null,
+            before: modalNodes().length,
+            after: -1
+          };
+          rec.taps.push(entry);
+          while (rec.taps.length > CFG.maxTaps) rec.taps.shift();
+          setTimeout(function () {
+            entry.after = modalNodes().length;
+            entry.prevented = e.defaultPrevented === true;
+          }, CFG.settleMs);
+        }, true);
+      }
+
+      var buttons = [];
+      var found;
+      try { found = document.querySelectorAll(BTN); } catch (e) { found = []; }
+      for (var i = 0; i < found.length; i++) {
+        var a = found[i];
+        var r = a.getBoundingClientRect();
+        var cs = window.getComputedStyle(a);
+        var hit = null;
+        if (r.width > 0 && r.height > 0) {
+          hit = document.elementFromPoint(
+            Math.round(r.left + r.width / 2),
+            Math.round(r.top + r.height / 2)
+          );
+        }
+        buttons.push({
+          t: a.getAttribute('title') || '',
+          box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+          vis: cs.display !== 'none' && cs.visibility !== 'hidden' && cs.pointerEvents !== 'none',
+          hit: nameOf(hit),
+          covered: hit !== null && hit !== a && !a.contains(hit)
+        });
+      }
+
+      var open = modalNodes();
+      var top = '';
+      if (open.length > 0) {
+        top = (open[open.length - 1].innerText || '')
+          .replace(/\s+/g, ' ').trim().slice(0, CFG.textChars);
+      }
+
+      // 창이 만들어졌는데도 안 보이는 경우를 위해, 맨 위 모달의 기하와 조상 사슬을 뜬다.
+      // 조상까지 보는 이유는 `position:fixed` 때문이다 — 조상에 transform/filter 가 있으면
+      // 그 조상이 기준이 되어 화면 밖으로 나갈 수 있다.
+      var modal = null;
+      if (open.length > 0) {
+        var ov = open[open.length - 1];
+        var b = boxOf(ov);
+        var mhit = null;
+        if (b[2] > 0 && b[3] > 0) {
+          mhit = document.elementFromPoint(
+            Math.max(0, Math.min(window.innerWidth - 1, b[0] + Math.round(b[2] / 2))),
+            Math.max(0, Math.min(window.innerHeight - 1, b[1] + Math.round(b[3] / 2)))
+          );
+        }
+        var chain = [];
+        for (var p = ov.parentElement; p && chain.length < CFG.chainDepth; p = p.parentElement) {
+          chain.push(nameOf(p) + '[' + cssOf(p) + ']');
+        }
+        var body = ov.firstElementChild;
+        modal = {
+          cls: (ov.className || '').trim(),
+          box: b,
+          css: cssOf(ov),
+          hit: nameOf(mhit),
+          inside: mhit !== null && (mhit === ov || ov.contains(mhit)),
+          contentBox: body ? boxOf(body) : null,
+          contentCss: body ? cssOf(body) : '',
+          chain: chain.join(' < '),
+          scroll: [Math.round(window.scrollX), Math.round(window.scrollY)]
+        };
+      }
+
+      // `100vh` 가 실제로 몇 px 인지 재 본다. 이것이 0 이면 원인은 여기서 끝난다 —
+      // 코레일 레이어는 `.layerPopup { height: 100vh }` 라, vh 가 0 이면 창은 열려도
+      // 높이 0 이라 사람 눈에는 아무 반응이 없다. (§38-10)
+      // innerHeight 는 멀쩡한데 vh 만 0 인 경우가 있어서 **따로** 재야 한다.
+      var vh100 = -1;
+      try {
+        var ruler = document.createElement('div');
+        ruler.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:100vh;' +
+          'visibility:hidden;pointer-events:none';
+        document.body.appendChild(ruler);
+        vh100 = Math.round(ruler.getBoundingClientRect().height);
+        ruler.parentNode.removeChild(ruler);
+      } catch (e) {
+        vh100 = -1;
+      }
+
+      return {
+        rows: ktxRows().length,
+        modals: open.length,
+        topModal: top,
+        modal: modal,
+        armed: rec.armed,
+        view: [window.innerWidth, window.innerHeight, window.devicePixelRatio || 1],
+        vh100: vh100,
+        clientH: document.documentElement.clientHeight,
+        buttons: buttons,
+        taps: rec.taps
+      };
+    })();
+    """.trimIndent()
+
+    /**
+     * `100vh` 보정. 어긋났을 때만 손대고, 멀쩡하면 아무것도 하지 않는다. (§38-10)
+     *
+     * `getComputedStyle` 로는 `100vh` 가 몇 px 인지 알 수 없다 — 규칙이 어느 요소에
+     * 걸렸는지 모르기 때문이다. 그래서 자를 하나 만들어 **직접 잰다.**
+     * `innerHeight` 와 비교하는 이유는 실측에서 그 둘이 갈렸기 때문이다(460 대 0).
+     */
+    private val VIEWPORT_FIX_TEMPLATE = """
+    (function () {
+      var CFG = /*__CONFIG__*/;
+
+      // `100vh` 가 실제로 몇 px 인지. 잰 즉시 걷어낸다.
+      function measureVh() {
+        var host = document.body || document.documentElement;
+        if (!host) return -1;
+        var ruler = document.createElement('div');
+        ruler.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:100vh;' +
+          'visibility:hidden;pointer-events:none';
+        host.appendChild(ruler);
+        var h = Math.round(ruler.getBoundingClientRect().height);
+        ruler.parentNode.removeChild(ruler);
+        return h;
+      }
+
+      var ih = Math.round(window.innerHeight || 0);
+      var vh;
+      try { vh = measureVh(); } catch (e) { vh = -1; }
+
+      // 아직 크기가 없는 문서. 여기서 값을 박아 두면 오히려 잘못 굳는다.
+      if (ih <= 0) return { applied: false, reason: 'noHeight', vh: vh, ih: ih };
+      if (vh >= 0 && Math.abs(vh - ih) <= CFG.tolerance) {
+        return { applied: false, reason: 'ok', vh: vh, ih: ih };
+      }
+
+      var root = document.documentElement;
+      function apply() {
+        var h = Math.round(window.innerHeight || 0);
+        if (h > 0) root.style.setProperty(CFG.varName, h + 'px');
+      }
+
+      if (!document.getElementById(CFG.styleId)) {
+        var style = document.createElement('style');
+        style.id = CFG.styleId;
+        // 폴백을 `100vh` 로 둔다. 변수가 어떤 이유로 비어도 지금보다 나빠지지 않는다.
+        style.textContent = CFG.layers.join(',') +
+          '{height:var(' + CFG.varName + ',100vh)!important}';
+        (document.head || root).appendChild(style);
+      }
+
+      // 앱 패널이 여닫히거나 화면이 돌면 WebView 높이가 바뀐다. 그때 다시 맞춘다.
+      if (!window.__catchtrainVhBound) {
+        window.__catchtrainVhBound = true;
+        window.addEventListener('resize', apply, true);
+        window.addEventListener('orientationchange', apply, true);
+      }
+      apply();
+      return { applied: true, vh: vh, ih: ih };
+    })();
+    """.trimIndent()
+
+    /**
+     * 스크롤 되살리기를 끄고 맨 위로. 읽기 + 스크롤뿐이다. (§38-9)
+     *
+     * `scrollingElement` 와 `body` 를 함께 건드리는 이유는 문서 모드에 따라 실제로
+     * 스크롤되는 요소가 갈리기 때문이다. 이미 맨 위면 아무 일도 일어나지 않는다.
+     */
+    private val SCROLL_TOP_TEMPLATE = """
+    (function () {
+      function top() {
+        try {
+          return Math.round(
+            window.scrollY || (document.scrollingElement || document.documentElement).scrollTop || 0
+          );
+        } catch (e) { return -1; }
+      }
+
+      var out = { before: top(), after: -1, restore: '' };
+
+      // 다음 새로고침이 이 위치를 되살리지 않게 한다. 이력 항목에 붙는 값이라
+      // 나가는 문서에서 걸어 두어야 효과가 있다.
+      try {
+        if ('scrollRestoration' in history) {
+          out.restore = history.scrollRestoration;
+          history.scrollRestoration = 'manual';
+        }
+      } catch (e) { /* 무시 */ }
+
+      try { window.scrollTo(0, 0); } catch (e) { /* 무시 */ }
+      try {
+        var se = document.scrollingElement || document.documentElement;
+        if (se) se.scrollTop = 0;
+      } catch (e) { /* 무시 */ }
+      try { if (document.body) document.body.scrollTop = 0; } catch (e) { /* 무시 */ }
+
+      out.after = top();
+      return out;
     })();
     """.trimIndent()
 

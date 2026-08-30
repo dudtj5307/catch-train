@@ -1,5 +1,6 @@
 package dev.yslee.catchtrain.ui
 
+import android.os.Build
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
@@ -21,9 +22,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -48,9 +54,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -96,10 +109,12 @@ fun MainScreen(
     val toast by viewModel.toast.collectAsStateWithLifecycle()
 
     var showSettings by remember { mutableStateOf(false) }
-    var expanded by remember { mutableStateOf(true) }
+    // 상세도 접어 둔다. 시작 직후에는 보여 줄 것이 주소뿐이라, 좁은 폰에서
+    // 코레일 화면만 밀어 낸다. 필요하면 헤더의 [펼치기] 로 연다.
+    var expanded by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
-    // 열차 선택이 이 앱의 출발점이라 처음부터 펼쳐 둔다.
-    var showTrains by remember { mutableStateOf(true) }
+    // 시작할 때는 접어 둔다. 조회 전에는 목록이 비어 있어서 코레일 화면만 가린다.
+    var showTrains by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     // 페이지가 바뀔 때마다 목록을 자동으로 다시 읽는다. (DESIGN.md §19)
@@ -126,8 +141,13 @@ fun MainScreen(
             settings = settings,
             viewModel = viewModel,
             onGoHome = {
-                onReloadStartPage()
+                // 화면을 먼저 닫는다. 설정 화면이 떠 있는 동안 WebView 는 화면에서
+                // 떼어져 있고, 크기 0 인 WebView 로 문서를 받으면 `100vh` 가 0 으로
+                // 굳어 코레일의 역/날짜 선택 레이어가 납작해진다. (§38-10)
+                // 로드 쪽에도 대기가 있지만(KtxWebViewHost.loadStartUrl), 굳이
+                // 기다리게 만들 이유가 없다.
                 showSettings = false
+                onReloadStartPage()
             },
             onClose = { showSettings = false },
         )
@@ -143,9 +163,16 @@ fun MainScreen(
                 state = status.state,
                 intervalLabel = settings.intervalLabel,
                 pageUrl = pageUrl,
+                // 이력은 상태가 아니라 WebView 가 들고 있다. 주소가 바뀔 때 같이
+                // 다시 읽히도록 pageUrl 과 한 식에 묶어 둔다.
+                canGoBack = pageUrl != null && webView.canGoBack(),
                 expanded = expanded,
                 onToggleExpand = { expanded = !expanded },
                 onOpenSettings = { showSettings = true },
+                onGoBack = { if (webView.canGoBack()) webView.goBack() },
+                // 갱신은 새로고침 하나뿐이다. 감시 루프가 쓰는 것과 같은 방식이다. (대원칙 1)
+                onReloadPage = { webView.reload() },
+                onNavigate = { input -> webView.loadUrl(normalizeUrl(input)) },
             )
         },
         bottomBar = {
@@ -199,11 +226,6 @@ fun MainScreen(
                         SelectionSummaryCard(
                             selection = selection,
                             searchSummary = searchSummaryOf(status.trains, status.searchDate),
-                            onEdit = {
-                                showTrains = true
-                                showLogs = false
-                                viewModel.refreshTrainList(quiet = true)
-                            },
                         )
                         StatusCard(status = status)
                     }
@@ -223,17 +245,13 @@ fun MainScreen(
                     }
                 } else if (
                     // 2단계까지 눌렀거나(RESERVED), 좌석만 골라 두고 사람에게 넘겼거나(SEAT_SELECTED).
-                    // 둘 다 "지금 화면을 봐야 하는" 상태라 같은 카드가 맡는다. (§38-6-1)
+                    // 둘 다 "지금 코레일 화면을 봐야 하는" 상태라, 앱은 그 화면을 가리지 않고
+                    // 재촉 알림을 끄는 버튼만 얹는다. (§38-6-1, §19-3)
                     (status.state == WatchState.RESERVED ||
-                        status.state == WatchState.SEAT_SELECTED) && reserve != null
+                        status.state == WatchState.SEAT_SELECTED) && status.reserveAlerting
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
-                        ReservedCard(
-                            reserve = reserve,
-                            alerting = status.reserveAlerting,
-                            onSilence = viewModel::silenceReserveAlert,
-                            onStop = viewModel::stopWatching,
-                        )
+                        ReserveAlertCard(onSilence = viewModel::silenceReserveAlert)
                     }
                 }
 
@@ -276,7 +294,18 @@ fun MainScreen(
                         )
                     }
                     if (showLogs) {
-                        LogPanel(logs = logs, onClear = viewModel::clearLogs)
+                        LogPanel(
+                            logs = logs,
+                            onClear = viewModel::clearLogs,
+                            onProbeStation = viewModel::probeStationPopup,
+                            onCopied = { count ->
+                                // Android 13+ 는 시스템이 복사 확인을 직접 띄운다.
+                                // 여기서 또 띄우면 같은 말이 두 번 나온다.
+                                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                                    viewModel.notify("로그 ${count}줄을 복사했습니다.")
+                                }
+                            },
+                        )
                     }
                 }
             }
@@ -366,23 +395,35 @@ private fun PopupOverlay(
 /**
  * 화면 맨 위 헤더. (DESIGN.md §22)
  *
- * 접힘 : ● 다음 확인 대기 · 1.0~3.0초            [v] [설정]
- * 펼침 : 위 한 줄 + CATCH TRAIN / 현재 주소
+ * 접힘 : CATCH TRAIN  ● 다음 확인 대기 · 1.0~3.0초     [v] [설정]
+ * 펼침 : 위 한 줄 + [←] 주소 입력칸 [⟳]
  *
  * 예전에 패널 아래에 따로 있던 [패널 접기/펼치기] 버튼을 여기로 흡수했다.
  * 여닫는 컨트롤이 한 곳에만 있어야 헤더 높이가 예측 가능하다.
  *
  * [코레일 홈] 버튼이 있던 자리는 [설정] 이 가져갔다. 시작 페이지로 돌아가는 기능은
  * 설정 화면의 "페이지" 섹션으로 옮겼다.
+ *
+ * 로고는 펼침 줄에 있었는데, 접었을 때 앱 이름이 화면 어디에도 없었다.
+ * 항상 보이는 첫 줄 맨 왼쪽으로 옮기고, 그 자리는 주소 줄이 통째로 쓴다.
+ *
+ * **[onGoBack] · [onNavigate] 는 조회 조건을 날린다.** 되돌리기든 주소 이동이든
+ * 조회 결과 화면을 떠나면 사용자가 사이트에 직접 넣어 둔 구간·날짜가 사라진다
+ * (대원칙 4·5). 그래도 두는 이유는 **사용자가 누른 것**이기 때문이다 —
+ * 앱이 스스로 부르는 자리가 아니다.
  */
 @Composable
 private fun AppHeader(
     state: WatchState,
     intervalLabel: String,
     pageUrl: String?,
+    canGoBack: Boolean,
     expanded: Boolean,
     onToggleExpand: () -> Unit,
     onOpenSettings: () -> Unit,
+    onGoBack: () -> Unit,
+    onReloadPage: () -> Unit,
+    onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(color = MaterialTheme.colorScheme.surface) {
@@ -395,9 +436,16 @@ private fun AppHeader(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp)
-                    .padding(start = 16.dp, end = 6.dp),
+                    .padding(start = 14.dp, end = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                Text(
+                    text = "CATCH TRAIN",
+                    style = BrandTitle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.width(12.dp))
                 StatusDot(state = state)
                 Spacer(Modifier.width(10.dp))
                 Text(
@@ -447,35 +495,122 @@ private fun AppHeader(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                        .padding(start = 4.dp, end = 4.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = "CATCH TRAIN",
-                        style = BrandTitle,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    IconButton(
+                        onClick = onGoBack,
+                        enabled = canGoBack,
+                        modifier = Modifier.size(NAV_BUTTON_SIZE),
+                        colors = IconButtonDefaults.iconButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "뒤로 가기",
+                            modifier = Modifier.size(NAV_ICON_SIZE),
+                        )
+                    }
+                    UrlField(
+                        pageUrl = pageUrl,
+                        onNavigate = onNavigate,
+                        modifier = Modifier.weight(1f),
                     )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        text = pageUrl?.take(MAX_URL_CHARS) ?: "페이지 없음",
-                        style = MonoUrl,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .weight(1f)
-                            .background(
-                                MaterialTheme.colorScheme.surfaceVariant,
-                                MaterialTheme.shapes.extraSmall,
-                            )
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
-                    )
+                    IconButton(
+                        onClick = onReloadPage,
+                        modifier = Modifier.size(NAV_BUTTON_SIZE),
+                        colors = IconButtonDefaults.iconButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = "새로고침",
+                            modifier = Modifier.size(NAV_ICON_SIZE),
+                        )
+                    }
                 }
             }
 
             Hairline()
         }
     }
+}
+
+/**
+ * 주소 입력칸. 보여 주기만 하던 pill 을 그대로 입력칸으로 바꾼 것이다.
+ *
+ * 화면 주소를 따라가되 **편집 중에는 따라가지 않는다.** 감시 중에는 새로고침마다
+ * 주소가 다시 흘러들어오는데, 그때 입력 중인 글자를 덮어쓰면 고칠 수가 없다.
+ * 초점을 잃으면 고치던 것을 버리고 실제 주소로 돌아온다 — 고친 주소가 남아 있으면
+ * 지금 보고 있는 화면과 다른 주소가 표시된다.
+ *
+ * 이동은 키보드의 [이동](`ImeAction.Go`) 으로만 일어난다. 글자를 고치는 것만으로는
+ * 아무 요청도 나가지 않는다.
+ */
+@Composable
+private fun UrlField(
+    pageUrl: String?,
+    onNavigate: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val focusManager = LocalFocusManager.current
+    var editing by remember { mutableStateOf(false) }
+    var value by remember { mutableStateOf(TextFieldValue(pageUrl.orEmpty())) }
+
+    LaunchedEffect(pageUrl, editing) {
+        if (!editing) value = TextFieldValue(pageUrl.orEmpty())
+    }
+
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    BasicTextField(
+        value = value,
+        onValueChange = { value = it },
+        modifier = modifier
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant,
+                MaterialTheme.shapes.extraSmall,
+            )
+            .padding(horizontal = 8.dp, vertical = 7.dp)
+            .onFocusChanged { focus ->
+                editing = focus.isFocused
+                // 들어오자마자 전체 선택. 주소는 길고, 대개 통째로 갈아 끼운다.
+                if (focus.isFocused) {
+                    value = value.copy(selection = TextRange(0, value.text.length))
+                }
+            },
+        textStyle = MonoUrl.copy(color = MaterialTheme.colorScheme.onSurface),
+        singleLine = true,
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Uri,
+            imeAction = ImeAction.Go,
+        ),
+        keyboardActions = KeyboardActions(
+            onGo = {
+                val target = value.text.trim()
+                if (target.isNotEmpty()) onNavigate(target)
+                focusManager.clearFocus()
+            },
+        ),
+        decorationBox = { inner ->
+            Box(contentAlignment = Alignment.CenterStart) {
+                if (value.text.isEmpty()) {
+                    Text(text = "페이지 없음", style = MonoUrl, color = muted)
+                }
+                inner()
+            }
+        },
+    )
+}
+
+/** 사용자가 친 주소. 스킴이 없으면 https 로 연다. */
+private fun normalizeUrl(input: String): String {
+    val trimmed = input.trim()
+    val hasScheme = trimmed.startsWith("http://", ignoreCase = true) ||
+        trimmed.startsWith("https://", ignoreCase = true)
+    return if (hasScheme) trimmed else "https://$trimmed"
 }
 
 @Composable
@@ -521,21 +656,12 @@ private fun ControlBar(
             }
 
             when (state) {
-                WatchState.ERROR -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PrimaryButton(
-                        text = "다시 시도",
-                        onClick = onRetry,
-                        modifier = Modifier.weight(1f),
-                    )
-                    GhostButton(
-                        text = "중지",
-                        onClick = onStop,
-                        active = false,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(PRIMARY_BUTTON_HEIGHT),
-                    )
-                }
+                // 오류가 나면 감시 루프는 이미 멈춰 있다. [중지] 는 누를 것이 없어서 뺐다.
+                WatchState.ERROR -> PrimaryButton(
+                    text = "다시 시도",
+                    onClick = onRetry,
+                    modifier = Modifier.fillMaxWidth(),
+                )
 
                 WatchState.LOADING, WatchState.ANALYZING, WatchState.WAITING -> PrimaryButton(
                     text = "감시 중지",
@@ -615,6 +741,10 @@ private const val SCRIM_ALPHA = 0.55f
 private const val POPUP_HEIGHT_RATIO = 0.8f
 
 private val PRIMARY_BUTTON_HEIGHT = 52.dp
+
+/** 주소 줄의 [←] / [⟳]. 기본 IconButton(48dp)은 주소칸을 너무 밀어낸다. */
+private val NAV_BUTTON_SIZE = 36.dp
+private val NAV_ICON_SIZE = 18.dp
 
 /**
  * 시스템 내비게이션 인셋과 별개로 항상 확보하는 아래쪽 여백.

@@ -31,6 +31,18 @@ interface MatchNotifier {
      */
     fun notifyReserveReminder(match: SeatMatch, repeatIndex: Int, elapsedMs: Long)
 
+    /**
+     * 감시가 **스스로 멈췄다**는 알림. 지금은 감시 도중 로그인이 풀린 경우 하나뿐이다. (§27-1)
+     *
+     * 좌석 발견([notifyMatch])과 달리 좋은 소식이 아니고, 재촉([notifyReserveReminder])과
+     * 달리 한 번만 울린다. 사용자가 알아채지 못하면 **감시가 멈춘 채로 시간이 흐르므로**
+     * 화면 안의 오류 카드만으로는 부족하다.
+     *
+     * @param title 무슨 일인지 (예: `로그인이 풀렸습니다`)
+     * @param body 무엇을 해야 하는지
+     */
+    fun notifyWatchStopped(title: String, body: String)
+
     /** 재촉 알림만 걷어낸다. 좌석 발견 알림은 건드리지 않는다. */
     fun cancelReserveReminder()
 

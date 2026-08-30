@@ -128,6 +128,13 @@ class WatchControllerTest {
             reminders += repeatIndex to elapsedMs
         }
 
+        /** 감시가 스스로 멈췄다는 알림. (제목, 본문) */
+        val stopped = mutableListOf<Pair<String, String>>()
+
+        override fun notifyWatchStopped(title: String, body: String) {
+            stopped += title to body
+        }
+
         override fun cancelReserveReminder() {
             reminderCancelCount++
         }
@@ -170,17 +177,25 @@ class WatchControllerTest {
         }
     """.trimIndent()
 
+    /**
+     * @param clock 시간 예산을 재는 시계. 기본값은 실제 벽시계라 [advanceTimeBy] 로
+     *   흘려보낸 **가상 시간이 반영되지 않는다.** [WatchConfig.pageWaitMs] 처럼
+     *   경과 시간으로 끝나는 동작을 검사하려면 `{ testScheduler.currentTime }` 을 준다.
+     *   (DESIGN.md §39)
+     */
     private fun controllerFor(
         host: FakePageHost,
         notifier: MatchNotifier = RecordingNotifier(),
         logger: WatchLogger = WatchLogger(),
         scope: CoroutineScope,
+        clock: () -> Long = System::currentTimeMillis,
     ) = WatchController(
         host = host,
         parser = KtxParser(),
         notifier = notifier,
         logger = logger,
         scope = scope,
+        clock = clock,
     )
 
     @Test
@@ -313,7 +328,7 @@ class WatchControllerTest {
         assertTrue(host.requeryCount >= 2)
         assertEquals("재조회마다 클릭이 발생해야 한다", host.requeryCount, host.clickDetails.size)
 
-        val clicked = logger.entries.value.filter { it.code == LogCode.RESEARCH_CLICKED }
+        val clicked = logger.entries.value.filter { it.code == LogCode.RESEARCH_TRIGGERED }
         assertEquals(host.requeryCount, clicked.size)
         assertTrue(clicked.first().detail!!.contains("열차조회"))
 
@@ -343,10 +358,10 @@ class WatchControllerTest {
         runCurrent()
 
         assertEquals(WatchState.ERROR, controller.status.value.state)
-        assertEquals(WatchError.RESEARCH_BUTTON_NOT_FOUND, controller.status.value.error)
-        assertTrue(logger.entries.value.any { it.code == LogCode.RESEARCH_BUTTON_NOT_FOUND })
+        assertEquals(WatchError.REFRESH_FAILED, controller.status.value.error)
+        assertTrue(logger.entries.value.any { it.code == LogCode.RESEARCH_FAILED })
         // 클릭이 안 됐으므로 클릭 로그는 없어야 한다.
-        assertTrue(logger.entries.value.none { it.code == LogCode.RESEARCH_CLICKED })
+        assertTrue(logger.entries.value.none { it.code == LogCode.RESEARCH_TRIGGERED })
         // 재시도하지 않는다. 실패 뒤에 요청이 더 나가면 차단만 길어진다.
         assertEquals("한 번만 시도해야 한다", 1, host.requeryCount)
     }
@@ -473,6 +488,240 @@ class WatchControllerTest {
         val controller = controllerFor(host, scope = backgroundScope)
 
         assertFalse(controller.checkLogin().blocksWatch)
+    }
+
+    /**
+     * 코레일 세션은 시간이 지나면 서버에서 풀린다. 그대로 감시를 이어가면 좌석이 열려
+     * [예매] 를 누르는 그 순간에 튕긴다. 그래서 사이클마다 확인하고 즉시 멈춘다. (§27-1)
+     */
+    @Test
+    fun `감시 도중 로그인이 풀리면 멈추고 알린다`() = runTest {
+        val host = FakePageHost(json("SOLD_OUT"))
+        val notifier = RecordingNotifier()
+        val controller = controllerFor(host, notifier, scope = backgroundScope)
+
+        controller.start(
+            selection,
+            WatchConfig(minIntervalMs = 2_000L, maxIntervalMs = 2_000L),
+        )
+        runCurrent()
+        // 첫 사이클은 로그인 상태를 판정하지 못했다(UNKNOWN). 멈추지 않는다.
+        assertTrue(controller.status.value.state.isRunning)
+
+        host.loginJson = """{"state":"LOGGED_OUT","detail":"로그인 href=/ticket/login"}"""
+        advanceTimeBy(3_000L)
+        runCurrent()
+
+        assertEquals(WatchState.ERROR, controller.status.value.state)
+        assertEquals(WatchError.SESSION_EXPIRED, controller.status.value.error)
+        assertTrue(notifier.stopped.single().first.contains("로그인"))
+        // 좌석 발견 알림과는 다른 알림이다.
+        assertTrue(notifier.sent.isEmpty())
+    }
+
+    /** 판정하지 못한 것은 로그아웃이 아니다. 마커 하나를 놓쳤다고 감시를 끊지 않는다. (대원칙 6) */
+    @Test
+    fun `로그인 여부를 판정하지 못하면 감시를 이어간다`() = runTest {
+        val host = FakePageHost(json("SOLD_OUT"))
+        val notifier = RecordingNotifier()
+        val controller = controllerFor(host, notifier, scope = backgroundScope)
+
+        controller.start(
+            selection,
+            WatchConfig(minIntervalMs = 2_000L, maxIntervalMs = 2_000L),
+        )
+        advanceTimeBy(5_000L)
+        runCurrent()
+
+        assertTrue(controller.status.value.state.isRunning)
+        assertTrue(notifier.stopped.isEmpty())
+
+        controller.stop()
+    }
+
+    // ------------------------------------------------- 접속 대기열 (DESIGN.md §39)
+
+    /** 대기 화면·차단 화면처럼 열차가 없는 화면. */
+    private fun pageJson(status: String) =
+        """{"status":"$status","url":"https://www.korail.com/x","title":"t","trains":[]}"""
+
+    /**
+     * 대기열에 걸린 화면(`UNKNOWN_PAGE`)에서 **새로고침이 나가면 안 된다.** (§39)
+     *
+     * 이것이 사용자가 겪은 문제의 핵심이다. 대기 중에 새로고침하면 대기 순번이
+     * 날아가서 대기가 영영 끝나지 않는다.
+     */
+    @Test
+    fun `화면이 확정되기 전에는 새로고침하지 않고 제자리에서 다시 읽는다`() = runTest {
+        val host = FakePageHost(pageJson("UNKNOWN_PAGE"))
+        val controller = controllerFor(host, scope = backgroundScope, clock = { testScheduler.currentTime })
+
+        controller.start(
+            selection,
+            WatchConfig(
+                minIntervalMs = 0L,
+                maxIntervalMs = 0L,
+                pageWaitPollMs = 500L,
+                pageWaitFirstMs = 60_000L,
+            ),
+        )
+        advanceTimeBy(10_000L)
+        runCurrent()
+
+        // 첫 사이클은 새로고침 없이 현재 화면을 본다. 기다리는 동안에도 늘지 않아야 한다.
+        assertEquals(0, host.requeryCount)
+        // 대신 DOM 은 여러 번 다시 읽었다. (요청이 아니라 읽기다)
+        assertTrue("판독이 반복되어야 한다 (${host.evaluateCount}회)", host.evaluateCount > 5)
+        assertTrue(controller.status.value.state.isRunning)
+
+        controller.stop()
+    }
+
+    /** 대기가 풀리면 다음 사이클을 기다리지 않고 **그 자리에서** 이어서 분석한다. (§39) */
+    @Test
+    fun `기다리는 동안 목록이 나타나면 그대로 이어서 판정한다`() = runTest {
+        val host = FakePageHost(pageJson("UNKNOWN_PAGE"))
+        val notifier = RecordingNotifier()
+        val controller = controllerFor(host, notifier, scope = backgroundScope, clock = { testScheduler.currentTime })
+
+        controller.start(
+            selection,
+            WatchConfig(
+                autoReserveEnabled = false,
+                pageWaitPollMs = 500L,
+                pageWaitFirstMs = 60_000L,
+            ),
+        )
+        advanceTimeBy(5_000L)
+        runCurrent()
+        assertTrue(controller.status.value.state.isRunning)
+
+        // 대기가 풀려 목록이 그려졌다.
+        host.json = json("AVAILABLE")
+        advanceTimeBy(1_000L)
+        runCurrent()
+
+        assertEquals(WatchState.MATCHED, controller.status.value.state)
+        assertEquals(1, notifier.sent.size)
+        // 목록을 다시 보기까지 새로고침은 한 번도 나가지 않았다.
+        assertEquals(0, host.requeryCount)
+    }
+
+    /**
+     * 목록을 본 적이 있으면 [WatchConfig.pageWaitMs] 로 길게, 아직 못 봤으면
+     * [WatchConfig.pageWaitFirstMs] 로 짧게 기다린다. (§39)
+     *
+     * 짧은 쪽이 있어야 조회 결과 화면이 아닌 곳에서 감시를 시작한 사용자를
+     * 3분씩 세워 두지 않는다.
+     */
+    @Test
+    fun `목록을 본 적이 없으면 짧게 끊고 안내한다`() = runTest {
+        val host = FakePageHost(pageJson("UNKNOWN_PAGE"))
+        val controller = controllerFor(host, scope = backgroundScope, clock = { testScheduler.currentTime })
+
+        controller.start(
+            selection,
+            WatchConfig(
+                minIntervalMs = 0L,
+                maxIntervalMs = 0L,
+                pageWaitPollMs = 500L,
+                pageWaitFirstMs = 5_000L,
+                pageWaitMs = 3 * 60_000L,
+                maxUnknownPages = 1,
+            ),
+        )
+        advanceTimeBy(2_000L)
+        runCurrent()
+        assertTrue("예산 안에서는 기다린다", controller.status.value.state.isRunning)
+
+        advanceTimeBy(5_000L)
+        runCurrent()
+
+        assertEquals(WatchState.ERROR, controller.status.value.state)
+        assertEquals(WatchError.UNKNOWN_PAGE, controller.status.value.error)
+    }
+
+    /** 목록을 한 번 본 뒤의 `UNKNOWN` 은 전이 중일 가능성이 높다. 길게 기다린다. (§39) */
+    @Test
+    fun `목록을 본 뒤에는 짧은 예산을 넘겨도 계속 기다린다`() = runTest {
+        val host = FakePageHost(json("SOLD_OUT"))
+        val controller = controllerFor(host, scope = backgroundScope, clock = { testScheduler.currentTime })
+
+        controller.start(
+            selection,
+            WatchConfig(
+                minIntervalMs = 1_000L,
+                maxIntervalMs = 1_000L,
+                pageWaitPollMs = 500L,
+                pageWaitFirstMs = 5_000L,
+                pageWaitMs = 3 * 60_000L,
+                maxUnknownPages = 1,
+            ),
+        )
+        runCurrent()
+        // 첫 사이클에서 목록을 봤다.
+        assertEquals(1, controller.status.value.trainCount)
+
+        // 두 번째 사이클에서 대기열에 걸렸다.
+        host.json = pageJson("UNKNOWN_PAGE")
+        advanceTimeBy(1_500L)
+        runCurrent()
+        val refreshesWhenWaitBegan = host.requeryCount
+
+        // 짧은 예산(5초)을 한참 넘겨도 멈추지 않고, 그동안 새로고침도 나가지 않는다.
+        advanceTimeBy(30_000L)
+        runCurrent()
+
+        assertTrue(controller.status.value.state.isRunning)
+        assertEquals(refreshesWhenWaitBegan, host.requeryCount)
+
+        controller.stop()
+    }
+
+    /**
+     * 차단·로그인·세션만료는 [dev.yslee.catchtrain.parser.PageStatus.isSettled] 라
+     * **첫 판독에서 즉시** 빠져나간다. 기다림이 이 셋을 늦추면 안 된다. (§39)
+     */
+    @Test
+    fun `차단 화면은 기다리지 않고 즉시 멈춘다`() = runTest {
+        val host = FakePageHost(pageJson("BLOCKED"))
+        val controller = controllerFor(host, scope = backgroundScope, clock = { testScheduler.currentTime })
+
+        controller.start(
+            selection,
+            WatchConfig(pageWaitFirstMs = 3 * 60_000L, pageWaitMs = 3 * 60_000L),
+        )
+        // 시간을 전혀 흘려보내지 않았는데도 이미 멈춰 있어야 한다.
+        runCurrent()
+
+        assertEquals(WatchState.ERROR, controller.status.value.state)
+        assertEquals(WatchError.BLOCKED, controller.status.value.error)
+        assertEquals(1, host.evaluateCount)
+    }
+
+    /** 열차가 0건인 조회는 확정된 답이다. 기다리지 않고 그대로 다음 사이클로 간다. (§39) */
+    @Test
+    fun `결과 0건은 기다리지 않는다`() = runTest {
+        val host = FakePageHost(pageJson("NO_TRAIN"))
+        val controller = controllerFor(host, scope = backgroundScope, clock = { testScheduler.currentTime })
+
+        controller.start(
+            selection,
+            WatchConfig(
+                minIntervalMs = 1_000L,
+                maxIntervalMs = 1_000L,
+                pageWaitFirstMs = 3 * 60_000L,
+            ),
+        )
+        runCurrent()
+        assertEquals(1, host.evaluateCount)
+
+        // 기다리지 않았으므로 통상 간격 뒤에 곧바로 다음 새로고침이 나간다.
+        advanceTimeBy(1_500L)
+        runCurrent()
+        assertEquals(1, host.requeryCount)
+
+        controller.stop()
     }
 
     @Test

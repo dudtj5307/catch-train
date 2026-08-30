@@ -27,6 +27,23 @@ enum class PageStatus {
 
     /** 감시할 수 있는 페이지가 아님 (메인 화면, 안내 페이지 등) */
     UNKNOWN_PAGE,
+    ;
+
+    /**
+     * **이 판정을 그대로 믿고 다음 단계로 가도 되는가.** (DESIGN.md §39)
+     *
+     * [UNKNOWN_PAGE] 만 false 다. 나머지 다섯은 화면에서 무언가를 **확실히 알아본**
+     * 결과라 더 기다려도 답이 바뀌지 않는다 — 목록이 있거나(TRAIN_LIST), 결과
+     * 컨테이너는 있는데 0건이거나(NO_TRAIN), 로그인/세션/차단 안내가 떠 있다.
+     *
+     * [UNKNOWN_PAGE] 는 **"아직 아무것도 못 알아봤다"** 는 뜻이고 원인이 둘이다.
+     * 화면이 정말 엉뚱한 곳이거나, **아직 그려지는 중**이거나. 접속 대기열에 걸린
+     * 화면도 여기로 온다. 화면만 보고는 그 둘을 가를 수 없으므로
+     * [dev.yslee.catchtrain.watcher.WatchController] 는 이 값이 나와도 곧바로
+     * 판정하지 않고 제자리에서 다시 읽어 본다.
+     */
+    val isSettled: Boolean
+        get() = this != UNKNOWN_PAGE
 }
 
 /**

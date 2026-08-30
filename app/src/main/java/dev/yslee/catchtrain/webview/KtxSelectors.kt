@@ -20,6 +20,31 @@ object KtxSelectors {
     const val START_URL = "https://www.korail.com/ticket/main"
 
     /**
+     * 로그인 화면. **앱이 스스로 여는 유일한 다른 URL 이다.** (§27-2)
+     *
+     * 메인에 닿았는데 비로그인이 **확실할 때만** 여기로 보낸다. 로그인 자체는 사용자가
+     * 한다 (대원칙 3). 조회 결과 화면에서는 절대 하지 않는다 — 사용자가 넣어 둔 조회
+     * 조건이 통째로 날아간다 (대원칙 4·5).
+     */
+    const val LOGIN_URL = "https://www.korail.com/ticket/login"
+
+    /** [START_URL] 의 경로. URL 판정은 쿼리·해시를 뗀 경로 끝으로만 한다. */
+    private const val MAIN_PATH = "/ticket/main"
+
+    /**
+     * 이 URL 이 코레일 **메인(승차권 예매 시작)** 화면인가. (§27-2)
+     *
+     * 경로 끝으로만 본다. `/ticket/search/list` 나 `/ticket/main/무엇` 이 여기에 걸리면
+     * 사용자가 넣어 둔 조회 조건이 있는 화면을 앱이 갈아치우게 된다.
+     */
+    fun isMainPage(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val path = url.substringBefore('#').substringBefore('?').trimEnd('/')
+        return path.endsWith(MAIN_PATH, ignoreCase = true) &&
+            path.contains("korail.com", ignoreCase = true)
+    }
+
+    /**
      * 조회 결과 화면의 URL.
      *
      * **판정에 쓰지 않는다.** 코레일은 `<form>` 이 없는 AJAX 라 조회해도 URL 이 바뀌지
@@ -149,50 +174,25 @@ object KtxSelectors {
         const val ACTIVE = "active"
     }
 
-    // --- 재조회 -------------------------------------------------------------
-
-    /**
-     * 재조회 버튼. (DESIGN.md §10)
+    /*
+     * --- 재조회 -------------------------------------------------------------
      *
-     * 이 selector 는 버튼을 **누르기 위한** 것이 아니라 버튼이 화면 어디에 그려져 있는지
-     * 찾기 위한 것이다. 실제 클릭은 그 좌표에 진짜 터치를 내려보낸다.
+     * **여기에 재조회 버튼 selector 를 다시 넣지 말 것.** 갱신은 페이지 새로고침(F5)이고,
+     * 누를 버튼이 없다. (DESIGN.md §10, §38-9)
      *
-     * 실측 위치:
+     * 실측(2026-08-29, 모바일 폭 375px):
      *   div.ticketSrchWrap > div.selectAreaWrap > div.left_wrap
-     *     > div.inner.minner > div.btnWrap.btn_box > button.btn_bn-blue   "열차조회"
+     *     > div.inner.minner > div.btnWrap.btn_box   ← display:none
+     *       > button.btn_bn-blue   "열차조회"        ← DOM 에는 있지만 rect 가 0×0
      *
-     * `btn_bn-blue` 는 표현용 클래스라 기대지 않는다. 문구로 찾는 편이 안전하다.
-     */
-    val RESEARCH_BUTTON = listOf(
-        "div.ticketSrchWrap div.btnWrap button",
-        "div.selectAreaWrap div.btn_box button",
-        "div.ticketSrchWrap button.btn_bn-blue",
-    )
-
-    /**
-     * 재조회 버튼 문구. **부분일치를 쓰지 않고 완전일치로 비교한다.** (§38-5)
+     * 즉 [열차조회] 는 **모바일 레이아웃에서 CSS 로 숨겨져 있다.** 문서에는 존재하므로
+     * "selector 로 찾아진다" 는 것이 곧 "누를 수 있다" 가 아니다. 같은 자리에서 실제로
+     * 보이는 버튼은 `button.btn_lookup` "다음날 (…) 조회" 하나뿐인데, 그것을 누르면
+     * 사용자가 보던 날짜가 아닌 다음날을 조회한다. **절대 후보로 삼지 말 것.**
      *
-     * 바로 옆에 `다음날 (26년09월02일) 조회`(`button.btn_lookup`)가 있다.
-     * "조회" 부분일치로 찾으면 **사용자가 보던 날짜가 아닌 다음날을 조회해 버린다.**
-     * 비교 전에 공백을 모두 제거한다.
+     * 조회 조건은 DOM 이 아니라 localStorage["LS_TICKET_GENERAL"] 에 들어 있어서
+     * 새로고침해도 살아남는다. 그래서 새로고침이 같은 조건의 재조회가 된다.
      */
-    val RESEARCH_TEXTS_EXACT = listOf("열차조회")
-
-    /** 재조회 버튼으로 오인하면 안 되는 문구. 완전일치가 뚫렸을 때의 2차 방어다. */
-    val RESEARCH_TEXT_EXCLUDE = listOf(
-        "다음날", "이전날", "예매", "예약", "선택", "취소", "닫기", "로그인", "로그아웃", "결제",
-    )
-
-    /**
-     * 조회 조건이 들어 있는 영역. 재조회 버튼 후보의 **가점**에만 쓴다.
-     *
-     * 이 안에 있는 버튼을 먼저 본다는 뜻이고, 밖에 있다고 버리지는 않는다.
-     * 사이트가 바뀌어 이 영역을 못 찾아도 문구 완전일치가 여전히 버튼을 골라낸다.
-     */
-    val SEARCH_FORM_SCOPES = listOf(
-        "div.ticketSrchWrap",
-        "div.selectAreaWrap",
-    )
 
     /**
      * 조회 조건의 **출발일**을 읽을 자리. 화면에 되비쳐 주기 위한 표시용이다.
@@ -318,7 +318,11 @@ object KtxSelectors {
         /**
          * 로그인 상태 표시가 들어 있는 머리말 영역.
          *
-         * 이 안에서만 찾는다. 본문이나 모바일 메뉴까지 뒤지면 오판한다 — 아래 주의 참고.
+         * 이 안에서만 찾는다. 본문까지 뒤지면 오판한다 — 아래 주의 참고.
+         *
+         * **이 영역은 모바일 폭에서 `display:none` 이다.** (2026-08-29 실측, §38-7)
+         * 그래서 여기서도 [KtxLoginScript] 에서도 **보이는지를 따지지 않는다.**
+         * 앱의 WebView 는 폰 폭이라 눈에 보이는 로그인 표시가 화면에 하나도 없다.
          */
         val HEADER_SCOPES = listOf(
             "ul.h_top_right",
@@ -327,7 +331,23 @@ object KtxSelectors {
         )
 
         /**
+         * 모바일 [전체메뉴] 안쪽. 문구 판정([LOGOUT_TEXTS])의 보조 범위다.
+         *
+         * `div.bottom_menu_choose > button.logoutBtn` 의 **문구**가 상태를 따라 바뀐다.
+         * (비로그인 `로그인` / 로그인 `로그아웃`, 2026-08-29 실측)
+         * **클래스 이름(`logoutBtn`)은 고정이라 판정에 쓰면 안 된다** — 아래 주의 참고.
+         * 이 영역도 메뉴를 열기 전에는 `display:none` 이다.
+         */
+        val MENU_SCOPES = listOf(
+            "div.bottom_menu_choose",
+            "div.m_catetop_wrap",
+        )
+
+        /**
          * 비로그인 상태에만 나타나는 링크. `<a class="btnGoLogin" href="/ticket/login">로그인</a>`
+         *
+         * 2026-08-29 `www.korail.com/ticket/search/list` 에서 다시 확인했다.
+         * 문서에 딱 하나 있고 `ul.h_top_right` 안이다.
          */
         val LOGIN_LINK = listOf(
             "a.btnGoLogin",
@@ -373,5 +393,62 @@ object KtxSelectors {
         "div.tckWrap",
         "div.tabPage.active",
         "div.sub_content.tab-tck_view",
+    )
+
+    // --- 진단 전용 (감시 경로에서는 쓰지 않는다) --------------------------------
+
+    /**
+     * 출발역/도착역 선택 버튼. **누르지 않는다.** 상태를 읽는 데만 쓴다. (§38-10)
+     *
+     * 조회 결과 화면과 메인 화면의 클래스가 다르다.
+     *  - 결과 화면: `<a href="#none" class="btn_pop btn_end btn_pop-openStationPop" title="출발역 선택">`
+     *    (출발역 쪽에도 `btn_end` 가 붙는다. 사이트 쪽 오타지만 그대로 읽어야 한다)
+     *  - 메인 화면: `<a class="btn_pop btn_start">` / `<a class="btn_pop btn_end">`
+     *
+     * `btn-disabled` 가 붙은 것은 사이트가 일부러 막아 둔 것이라 제외한다.
+     */
+    val STATION_POPUP_BUTTON = listOf(
+        "a.btn_pop-openStationPop",
+        "a.btn_pop.btn_start:not(.btn-disabled)",
+        "a.btn_pop.btn_end:not(.btn-disabled)",
+    )
+
+    /**
+     * 페이지가 **스스로** 그리는 모달. `window.open` 팝업이 아니다. (§38-10)
+     *
+     * 역/지역 선택 창, 달력, 안내 메시지가 전부 이 포털로 들어온다.
+     * 이 개수가 늘었는지로 "창이 만들어지긴 했는가" 를 판정한다.
+     */
+    val PAGE_MODAL = listOf(
+        "div.ReactModalPortal div.ReactModal__Overlay",
+    )
+
+    // --- 뷰포트 단위 보정 (§38-10) ---------------------------------------------
+
+    /**
+     * **`height: 100vh` 하나로 화면을 채우는 레이어.** 여기가 납작해지면 창은 열려도
+     * 안 보인다. (§38-10)
+     *
+     * 사이트 CSS (번들 인라인, 2026-08-29 실측):
+     * ```css
+     * .layerPopup { width:100%; height:100vh; position:fixed;
+     *               background:transparent; z-index:1005; top:0; left:0 }
+     * ```
+     *
+     * 오버레이에는 **인라인 기하가 하나도 없다.** 코레일이 react-modal 에
+     * `overlayClassName` 을 넘기기 때문인데, 그러면 react-modal 은 기본 오버레이
+     * 인라인 스타일(`position:fixed; top/left/right/bottom:0`)을 **아예 붙이지 않는다.**
+     * 실제 덤프의 오버레이 `style` 은 `background-color` 한 줄뿐이다.
+     * 즉 이 창의 크기는 **전적으로 위 CSS 의 `100vh`** 에 달려 있고, 대체 경로가 없다.
+     *
+     * 안쪽 `div.ReactModal__Content` 는 `position:static; overflow:auto` 라 크기를
+     * 만들어 주지 못한다(실측 40px, Chrome 에서도 같다). 실제 패널은 오버레이 기준으로
+     * 놓이고 오버레이가 `overflow:hidden` 이라, 오버레이 높이가 0 이면 통째로 잘린다.
+     *
+     * [dev.yslee.catchtrain.webview.KtxParserScript.buildViewportFixScript] 가
+     * `100vh` 가 실제로 깨졌을 때만 이 선택자에 픽셀 높이를 덮어쓴다.
+     */
+    val VIEWPORT_HEIGHT_LAYER = listOf(
+        ".layerPopup",
     )
 }

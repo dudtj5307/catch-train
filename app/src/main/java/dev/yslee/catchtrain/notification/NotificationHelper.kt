@@ -160,13 +160,44 @@ class NotificationHelper(private val context: Context) : MatchNotifier {
         vibrate()
     }
 
+    /**
+     * 감시가 스스로 멈췄다는 알림. (지금은 감시 도중 로그인이 풀린 경우뿐이다, §27-1)
+     *
+     * 좌석 발견과 같은 채널을 쓰되 알림 ID 를 따로 둔다. 좌석 발견 알림이 떠 있는 채로
+     * 이 알림이 와도 서로 지우지 않는다.
+     *
+     * 진동을 한 번 울린다. 감시가 멈춘 것을 모르고 화면만 보고 있으면
+     * 그 시간이 통째로 낭비되기 때문이다. (되풀이하지는 않는다 — 놓쳐도 좌석을 잃는
+     * 종류의 소식이 아니다)
+     */
+    override fun notifyWatchStopped(title: String, body: String) {
+        if (hasPermission()) {
+            val contentIntent = openAppIntent(REQUEST_OPEN_APP)
+            val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_train)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .setAutoCancel(true)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setContentIntent(contentIntent)
+                .build()
+            notifySafely(STOPPED_NOTIFICATION_ID, notification)
+        }
+        vibrate()
+    }
+
     override fun cancelReserveReminder() {
         NotificationManagerCompat.from(context).cancel(ALERT_NOTIFICATION_ID)
         cancelVibration()
     }
 
     override fun cancelAll() {
-        NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
+        val manager = NotificationManagerCompat.from(context)
+        manager.cancel(NOTIFICATION_ID)
+        manager.cancel(STOPPED_NOTIFICATION_ID)
         cancelReserveReminder()
     }
 
@@ -256,6 +287,9 @@ class NotificationHelper(private val context: Context) : MatchNotifier {
         const val ALERT_CHANNEL_ID = "srt_watcher_reserve_alert"
         const val NOTIFICATION_ID = 1001
         const val ALERT_NOTIFICATION_ID = 1002
+
+        /** 감시가 스스로 멈췄다는 알림. 좌석 발견 알림을 지우지 않도록 ID 를 따로 둔다. */
+        const val STOPPED_NOTIFICATION_ID = 1003
         const val EXTRA_FROM_NOTIFICATION = "from_notification"
 
         /** 알림의 [알림 끄기] 를 눌러 들어온 경우. 재촉 알림을 멈춘다. */

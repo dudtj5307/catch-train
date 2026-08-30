@@ -38,7 +38,6 @@ class KtxParserScriptTest {
     fun `모든 스크립트가 자리표시자 없이 조립된다`() {
         listOf(
             KtxParserScript.build(),
-            KtxParserScript.buildLocateScript(1080, 1920),
             KtxParserScript.buildSelectScript(1080, 1920, target),
             KtxParserScript.buildSelectConfirmScript(target),
             KtxParserScript.buildReserveScript(1080, 1920, target),
@@ -46,7 +45,24 @@ class KtxParserScriptTest {
             KtxParserScript.buildObserverScript(),
             KtxParserScript.buildProbeScript(),
             KtxParserScript.buildPageKindScript(),
+            KtxParserScript.buildScrollTopScript(),
         ).forEach { assertAssembled(it) }
+    }
+
+    /**
+     * 새로고침이 직전 스크롤 위치를 되살리면 목록이 그려지기 전의 짧은 문서 끝에 붙어
+     * 화면이 맨 밑으로 튄다. 되살리기를 끄는 것이 이 스크립트의 핵심이다. (§38-9)
+     */
+    @Test
+    fun `스크롤 스크립트는 되살리기를 끄고 맨 위로 올린다`() {
+        val script = KtxParserScript.buildScrollTopScript()
+
+        assertTrue(script.contains("history.scrollRestoration = 'manual'"))
+        assertTrue(script.contains("window.scrollTo(0, 0)"))
+        // 읽기와 스크롤뿐이다. 사이트 코드를 부르거나 요청을 내지 않는다.
+        listOf("click(", "submit(", "fetch(", "location.href =").forEach { forbidden ->
+            assertFalse("스크롤 스크립트가 페이지를 건드린다: $forbidden", script.contains(forbidden))
+        }
     }
 
     /**
@@ -82,16 +98,31 @@ class KtxParserScriptTest {
     }
 
     /**
-     * 재조회 버튼 옆에 `다음날 (…) 조회` 가 있다.
-     * 부분일치로 고르면 사용자가 보던 날짜가 아닌 다음날을 조회한다. (§38-5)
+     * 갱신은 새로고침(F5)이다. **어떤 스크립트도 조회 버튼을 찾지 않는다.** (§38-9)
+     *
+     * 모바일 폭에서 `열차조회` 는 `display:none` 인 조상 아래에 있어 rect 가 0×0 이고,
+     * 그 자리에 실제로 보이는 것은 `다음날 (…) 조회` 뿐이다. 어느 쪽이든 스크립트가
+     * 다시 찾기 시작하면 **사용자가 보던 날짜가 아닌 다음날을 조회하는** 사고로 이어진다.
+     * 버튼 탐색이 슬그머니 되살아나는 것을 여기서 막는다.
      */
     @Test
-    fun `재조회 버튼은 문구 완전일치로만 고른다`() {
-        val script = KtxParserScript.buildLocateScript(1080, 1920)
+    fun `어떤 스크립트도 조회 버튼을 찾지 않는다`() {
+        val scripts = listOf(
+            KtxParserScript.build(),
+            KtxParserScript.buildSelectScript(1080, 1920, target),
+            KtxParserScript.buildSelectConfirmScript(target),
+            KtxParserScript.buildReserveScript(1080, 1920, target),
+            KtxParserScript.buildReserveResultScript(),
+            KtxParserScript.buildObserverScript(),
+            KtxParserScript.buildProbeScript(),
+            KtxParserScript.buildPageKindScript(),
+        )
 
-        assertTrue(script.contains("열차조회"))
-        assertTrue("완전일치 비교가 없다", script.contains("label === ktxNorm(CFG.texts[i])"))
-        assertTrue("2차 방어 목록이 없다", script.contains("다음날"))
+        scripts.forEach { script ->
+            listOf("열차조회", "다음날", "btn_lookup", "btn_box").forEach { forbidden ->
+                assertFalse("조회 버튼 탐색이 되살아났다: $forbidden", script.contains(forbidden))
+            }
+        }
     }
 
     /** 매진·예약대기 칸은 누르지 않는다. (§18, §38-8) */

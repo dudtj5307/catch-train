@@ -112,6 +112,19 @@ class WatchController(
     private var activeSelection: WatchSelection = WatchSelection.empty()
     private var activeConfig: WatchConfig = WatchConfig()
 
+    /**
+     * **이번 감시에서 조회 결과 화면에 한 번이라도 닿아 봤는가.** (DESIGN.md §39)
+     *
+     * [readSettledSnapshot] 이 얼마나 오래 기다릴지를 이 값으로 가른다.
+     * 목록을 본 뒤의 `UNKNOWN` 은 전이 중(대기열·렌더링)일 가능성이 높아 길게
+     * 기다릴 값어치가 있지만, 한 번도 못 본 `UNKNOWN` 은 화면 자체가 엉뚱한 곳일
+     * 가능성이 높아 짧게 끊고 안내를 띄우는 편이 낫다.
+     *
+     * [pause] / [resume] 로는 지우지 않는다. 앱을 잠깐 벗어났다 돌아온 것뿐인데
+     * 이미 알고 있던 사실을 잊을 이유가 없다. [start] 에서만 초기화한다.
+     */
+    private var hasSeenList: Boolean = false
+
     val isWatching: Boolean
         get() = loopJob?.isActive == true
 
@@ -125,6 +138,7 @@ class WatchController(
         notifiedKeys.clear()
         reserveAttemptedKeys.clear()
         soldOutCounts.clear()
+        hasSeenList = false
         _status.value = WatchStatus(state = WatchState.LOADING)
         logger.log(
             LogCode.WATCH_START,
@@ -297,9 +311,10 @@ class WatchController(
     /**
      * 사이트에 로그인되어 있는지 확인한다. ([KtxLoginScript])
      *
-     * 감시를 시작하기 전에 한 번 부른다. 코레일은 **비로그인 상태에서도 조회가 되고
+     * 두 곳에서 부른다. **감시를 시작하기 전에 한 번**(ViewModel), 그리고 감시 중
+     * **사이클마다**([ensureStillLoggedIn]). 코레일은 **비로그인 상태에서도 조회가 되고
      * 좌석 선택까지 되기 때문에**, 화면만 보고는 로그인 여부를 알 수 없다.
-     * 그대로 감시를 시작하면 좌석이 열린 바로 그 순간에 로그인 화면으로 튕긴다.
+     * 그대로 감시하면 좌석이 열린 바로 그 순간에 로그인 화면으로 튕긴다.
      *
      * DOM 만 읽으므로 요청이 나가지 않는다. = 차단 위험이 없다.
      *
@@ -397,14 +412,14 @@ class WatchController(
                 logger.log(LogCode.PAGE_LOAD_START, "현재 화면 분석 (재조회 없음)")
             } else {
                 updateStatus { copy(state = WatchState.LOADING) }
-                logger.log(LogCode.PAGE_LOAD_START, "열차조회 버튼 탭")
+                logger.log(LogCode.PAGE_LOAD_START, "새로고침(F5)")
 
                 val outcome = host.requery(
                     timeoutMs = config.pageTimeoutMs,
                     settleTimeoutMs = config.researchSettleMs,
-                    // 탭이 실제로 발생한 즉시 기록한다. 갱신이 안 될 때
-                    // "누르지 못한 것"과 "눌렸는데 결과가 같은 것"을 구분하기 위한 로그다.
-                    onClick = { detail -> logger.log(LogCode.RESEARCH_CLICKED, detail) },
+                    // 새로고침이 실제로 나간 즉시 기록한다. 갱신이 안 될 때
+                    // "갱신하지 않은 것"과 "갱신했는데 결과가 같은 것"을 구분하기 위한 로그다.
+                    onClick = { detail -> logger.log(LogCode.RESEARCH_TRIGGERED, detail) },
                 )
 
                 when (outcome) {
@@ -417,27 +432,27 @@ class WatchController(
                     }
 
                     is PageOutcome.Settled -> {
-                        // 좌석 상태가 그대로여서 응답이 같을 수도 있으므로 일단 분석해 본다.
+                        // 조회 결과가 실제로 0건일 수도 있으므로 일단 분석해 본다.
                         logger.log(LogCode.PAGE_SETTLE_TIMEOUT, outcome.detail)
                     }
 
                     is PageOutcome.ButtonNotFound -> {
                         // 재시도하지 않고 곧바로 멈춘다.
-                        // 버튼이 없는 이유는 대개 차단/오류 화면이라, 다시 눌러봐야
-                        // 상황이 나아지지 않고 요청만 늘어난다.
-                        logger.log(LogCode.RESEARCH_BUTTON_NOT_FOUND, outcome.detail)
-                        val error = WatchError.RESEARCH_BUTTON_NOT_FOUND
+                        // 새로고침으로도 목록에 닿지 못하는 이유는 대개 차단/오류 화면이라,
+                        // 다시 새로고침해 봐야 상황이 나아지지 않고 요청만 늘어난다.
+                        logger.log(LogCode.RESEARCH_FAILED, outcome.detail)
+                        val error = WatchError.REFRESH_FAILED
                         fail(error, error.guide)
                         return
                     }
 
                     is PageOutcome.NotTappable -> {
-                        // 조회 요청이 나가지 않았으므로 차단 위험은 없다.
-                        // 사용자가 화면을 정리하면 곧바로 회복되는 상황이라
+                        // 요청이 나가지 않았으므로 차단 위험은 없다.
+                        // 화면이 돌아오면 곧바로 회복되는 상황이라
                         // 곧장 멈추지 않고 연속 오류로만 센다.
                         consecutiveErrors++
-                        logger.log(LogCode.RESEARCH_NOT_TAPPABLE, outcome.detail)
-                        val error = WatchError.RESEARCH_BUTTON_NOT_TAPPABLE
+                        logger.log(LogCode.RESEARCH_SKIPPED_HIDDEN, outcome.detail)
+                        val error = WatchError.REFRESH_NOT_VISIBLE
                         if (consecutiveErrors >= config.maxConsecutiveErrors) {
                             fail(error, "${error.guide} (연속 ${consecutiveErrors}회)")
                             return
@@ -448,7 +463,7 @@ class WatchController(
                     }
 
                     is PageOutcome.Deferred -> {
-                        // 우리가 스스로 누르지 않기로 한 경우다. 오류가 아니므로
+                        // 우리가 스스로 갱신하지 않기로 한 경우다. 오류가 아니므로
                         // 연속 오류로 세지 않고 다음 차례를 그대로 기다린다.
                         logger.log(LogCode.RESEARCH_DEFERRED, outcome.detail)
                         updateStatus { copy(message = outcome.detail) }
@@ -476,12 +491,12 @@ class WatchController(
                 if (config.settleDelayMs > 0) delay(config.settleDelayMs)
             }
 
-            // 2) DOM 분석
+            // 2) DOM 분석. 화면이 확정될 때까지 제자리에서 다시 읽는다. (§39)
             updateStatus { copy(state = WatchState.ANALYZING) }
             logger.log(LogCode.DOM_PARSE_START)
 
             val snapshot: PageSnapshot = try {
-                parser.parse(host.evaluate(parserScript))
+                readSettledSnapshot(config)
             } catch (e: DomParseException) {
                 consecutiveErrors++
                 logger.log(LogCode.DOM_PARSE_ERROR, e.message)
@@ -518,6 +533,8 @@ class WatchController(
                     return
                 }
 
+                // 여기 닿았다는 것은 [readSettledSnapshot] 이 예산을 다 쓰도록
+                // 화면이 목록이 되지 않았다는 뜻이다. 그제서야 한 번 센다. (§39)
                 PageStatus.UNKNOWN_PAGE -> {
                     consecutiveUnknownPages++
                     if (consecutiveUnknownPages >= config.maxUnknownPages) {
@@ -537,8 +554,14 @@ class WatchController(
 
                 PageStatus.NO_TRAIN, PageStatus.TRAIN_LIST -> {
                     consecutiveUnknownPages = 0
+                    // 이번 감시에서 조회 결과 화면에 닿아 봤다. 이후의 `UNKNOWN` 은
+                    // 화면이 틀린 것이 아니라 전이 중일 가능성이 높다. (§39)
+                    hasSeenList = true
                 }
             }
+
+            // 2-1) 로그인이 아직 살아 있는가. (§27-1)
+            if (!ensureStillLoggedIn(config)) return
 
             // 3) 선택 판정
             logger.log(LogCode.TRAIN_COUNT, snapshot.trains.size.toString())
@@ -613,6 +636,158 @@ class WatchController(
             // 5) 다음 사이클 예약
             waitForNextCycle(config)
         }
+    }
+
+    /**
+     * **화면이 확정될 때까지 제자리에서 다시 읽는다.** (DESIGN.md §39)
+     *
+     * ## 왜 한 번으로 부족한가
+     *
+     * 코레일은 NetFunnel 접속 대기열이 물려 있다. 새로고침한 뒤 목록 대신 대기
+     * 화면이 몇 분씩 떠 있을 수 있고, 그 화면은 [PageStatus.UNKNOWN_PAGE] 로 읽힌다.
+     *
+     * 예전에는 그 한 번의 판독으로 이번 사이클을 끝내고 다음 사이클로 넘어갔는데,
+     * **다음 사이클의 첫 동작이 새로고침**이다. 대기 중에 새로고침하면 대기 순번이
+     * 날아간다. 기본 간격이 0.1~0.3초라 대기 화면을 쉬지 않고 두들기는 꼴이었고,
+     * 그래서 대기가 끝나지 않은 채로 [WatchConfig.maxUnknownPages] 만 소진하고
+     * 감시가 죽었다. 사용자가 본 "싱크가 안 맞는다" 가 이것이다.
+     *
+     * 그래서 목록이 나타날 때까지 **다음 사이클로 넘어가지 않는다.** 여기서 하는
+     * 일은 DOM 읽기뿐이라 **요청이 한 번도 나가지 않는다.** 대원칙 2 가 세는 것은
+     * 요청 횟수지 판독 횟수가 아니다.
+     *
+     * ## 정상일 때는 아무것도 달라지지 않는다
+     *
+     * 첫 판독이 [PageStatus.isSettled] 면 그 자리에서 돌려준다. 목록이 보이는
+     * 정상 상황에서는 예전과 **완전히 같은 경로로 같은 시간에** 끝난다.
+     * 지연이 붙는 것은 `UNKNOWN_PAGE` 하나뿐이다.
+     *
+     * 차단·로그인·세션만료도 `isSettled` 라 **첫 판독에서 즉시** 빠져나간다.
+     * 기다림이 그 셋을 늦추지 않는다 — 차단된 화면을 3분씩 붙들고 있으면 안 된다.
+     *
+     * ## 얼마나 기다리는가
+     *
+     * 목록을 한 번이라도 본 뒤라면 [WatchConfig.pageWaitMs](길게), 아직 못 봤다면
+     * [WatchConfig.pageWaitFirstMs](짧게)다. 목록을 본 적이 없다는 것은 화면 자체가
+     * 엉뚱한 곳일 가능성이 높다는 뜻이라, 오래 붙들지 않고 안내를 띄우는 편이 낫다.
+     *
+     * 기다리는 동안 경과 시간을 상태에 계속 흘려 준다. 화면이 멈춘 것처럼 보이면
+     * 사용자는 앱이 죽은 줄 알고, 그게 실제로 겪은 "얼탄다" 이다.
+     *
+     * @return 확정된 스냅샷. 예산을 다 쓰면 마지막으로 읽은 `UNKNOWN_PAGE` 스냅샷.
+     * @throws DomParseException 예산 내내 판독 자체가 실패한 경우. 호출부는 이것을
+     *         예전과 똑같이 다룬다 — 연속 오류로 세고 다음 사이클로 넘어간다.
+     */
+    private suspend fun readSettledSnapshot(config: WatchConfig): PageSnapshot {
+        val budgetMs = if (hasSeenList) config.pageWaitMs else config.pageWaitFirstMs
+        val startedAt = clock()
+        var reads = 0
+        var waitLogged = false
+
+        // 어떻게 빠져나가든 "기다리는 중" 문구를 남겨 두지 않는다. [stop]/[pause] 로
+        // 취소되어 화면이 "중지됨" 이 됐는데 옆에 그 문구가 붙어 있으면 헷갈린다.
+        try {
+            while (true) {
+                // 잡는 것은 [DomParseException] 하나뿐이다. `runCatching` 은 코루틴
+                // 취소까지 삼켜서, [감시 종료] 를 눌렀는데 분석 오류로 둔갑시킨다.
+                var snapshot: PageSnapshot? = null
+                var failure: DomParseException? = null
+                try {
+                    snapshot = parser.parse(host.evaluate(parserScript))
+                } catch (e: DomParseException) {
+                    failure = e
+                }
+                reads++
+
+                // 확정됐다. 첫 판독이면 예전과 똑같은 자리에서 똑같은 값으로 끝난다.
+                if (snapshot != null && snapshot.status.isSettled) {
+                    if (waitLogged) {
+                        logger.log(
+                            LogCode.PAGE_WAIT_DONE,
+                            "${snapshot.status.name} ${elapsedText(startedAt)} ${reads}회 판독",
+                        )
+                    }
+                    return snapshot
+                }
+
+                if (clock() - startedAt >= budgetMs) {
+                    if (waitLogged) {
+                        logger.log(
+                            LogCode.PAGE_WAIT_TIMEOUT,
+                            "${elapsedText(startedAt)} ${reads}회 판독 - 목록이 나타나지 않음",
+                        )
+                    }
+                    return snapshot ?: throw (failure ?: DomParseException("화면을 읽지 못했습니다."))
+                }
+
+                if (!waitLogged) {
+                    waitLogged = true
+                    logger.log(
+                        LogCode.PAGE_WAIT_START,
+                        (failure?.message ?: PageStatus.UNKNOWN_PAGE.name) +
+                            " - 최대 ${budgetMs / 1000}초 기다림 (새로고침하지 않음)",
+                    )
+                } else if (reads % WAIT_TICK_READS == 0) {
+                    logger.log(LogCode.PAGE_WAIT_TICK, "${elapsedText(startedAt)} ${reads}회")
+                }
+
+                // 같은 초 안에서는 같은 문자열이 되고, 그러면 값이 같아
+                // StateFlow 가 알아서 걸러 낸다. (불필요한 recomposition 없음)
+                updateStatus {
+                    copy(message = "화면을 기다리는 중입니다… ${elapsedText(startedAt)}")
+                }
+
+                delay(config.pageWaitPollMs)
+            }
+        } finally {
+            if (waitLogged) updateStatus { copy(message = null) }
+        }
+    }
+
+    private fun elapsedText(startedAt: Long): String = "${(clock() - startedAt) / 1000}초"
+
+    /**
+     * 감시 도중에 로그인이 풀렸는지 본다. **사이클마다** 부른다. (§27-1)
+     *
+     * ## 매 사이클 확인해도 되는 이유
+     *
+     * 이 확인은 [KtxLoginScript] 를 한 번 실행하는 **DOM 읽기**다.
+     * 머리말 안의 링크 몇 개를 보는 것이 전부라 **요청이 나가지 않는다.**
+     * 한 사이클의 비용은 새로고침(문서 + 번들 + 조회 API, 수 초)인데 그에 비하면
+     * 없는 것이나 같다. 차단 위험(대원칙 2)도 늘지 않는다.
+     *
+     * 어차피 바로 앞에서 DOM 분석을 한 번 하므로, 늘어나는 것은 JS 실행 한 번뿐이다.
+     *
+     * ## 왜 멈추는가
+     *
+     * 코레일 세션은 시간이 지나면 서버에서 풀린다. 풀린 채로 감시를 이어가면
+     * 화면상 조회는 계속 되고 좌석도 보이지만, 좌석이 열려 [예매] 를 누르는
+     * 바로 그 순간 로그인 화면으로 튕긴다. 몇 시간을 기다린 그 한 번을 잃는다.
+     * 그럴 바에는 **그 자리에서 멈추고 사람을 부르는 편이 낫다.**
+     *
+     * ## 재확인하지 않는다
+     *
+     * 머리말은 서버가 그려 보내는 것이라 "로그인 화면으로 넘어가는 도중" 같은
+     * 어중간한 상태가 없다. 게다가 이 함수는 앞 단계에서 화면이 **조회 결과
+     * 화면으로 판정된 뒤**에만 불린다. 대기열·오류 화면이면 머리말이 통째로 없어
+     * `UNKNOWN` 이 되고, `UNKNOWN` 은 대원칙 6 대로 멈추지 않는다.
+     *
+     * @return 계속 감시해도 되면 true. false 면 이미 멈춤 처리까지 끝난 상태다.
+     */
+    private suspend fun ensureStillLoggedIn(config: WatchConfig): Boolean {
+        if (!checkLogin().blocksWatch) return true
+
+        logger.log(LogCode.WATCH_STOP, "감시 중 로그인이 풀림")
+        if (config.notificationEnabled) {
+            notifier.notifyWatchStopped(
+                title = "로그인이 풀려 감시를 멈췄습니다",
+                body = LOGGED_OUT_GUIDE,
+            )
+        } else {
+            logger.log(LogCode.NOTIFICATION_SKIPPED, "알림 꺼짐 (로그인 풀림)")
+        }
+        fail(WatchError.SESSION_EXPIRED, LOGGED_OUT_GUIDE)
+        return false
     }
 
     private fun notifyMatches(newMatches: List<SeatMatch>, config: WatchConfig) {
@@ -744,10 +919,13 @@ class WatchController(
         // --- 2단계 : 하단 바의 [예매] ----------------------------------------
         updateStatus { copy(message = "[예매] 를 누르는 중…") }
 
+        // 여기만 예산이 다르다. 대기열은 조회보다 **예매를 누른 직후**에 잘 붙고,
+        // 전환이 시작되었다는 것은 요청이 이미 나갔다는 뜻이다. 6초에서 포기하면
+        // 몇 시간 기다린 좌석을 대기창 앞에서 버린다. (§39)
         val outcome = host.confirmReserve(
             target = target,
-            timeoutMs = config.reserveTimeoutMs,
-            settleTimeoutMs = config.reserveSettleMs,
+            timeoutMs = config.confirmTimeoutMs,
+            settleTimeoutMs = config.confirmSettleMs,
             onClick = { detail -> logger.log(LogCode.RESERVE_CLICKED, detail) },
         )
 
@@ -960,6 +1138,17 @@ class WatchController(
 
     private companion object {
         const val MAX_LOGGED_WARNINGS = 3
+
+        /**
+         * 화면을 기다리는 동안 진행 로그를 남기는 주기(판독 횟수 기준). (§39)
+         * 500ms 간격이므로 대략 5초에 한 줄이다. 로그 버퍼가 이것만으로 차지 않게.
+         */
+        const val WAIT_TICK_READS = 10
+
+        /** 감시 도중 로그인이 풀렸을 때의 안내. 화면과 알림에 같은 문구를 쓴다. */
+        const val LOGGED_OUT_GUIDE =
+            "코레일 로그인이 풀려 감시를 멈췄습니다. " +
+                "코레일 화면에서 다시 로그인한 뒤 감시를 시작하세요."
     }
 
     /** 자동 예약을 시도한 뒤 감시 루프가 이어갈 방향. */

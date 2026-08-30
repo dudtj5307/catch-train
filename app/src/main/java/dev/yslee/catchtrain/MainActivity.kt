@@ -23,6 +23,7 @@ import dev.yslee.catchtrain.notification.NotificationHelper
 import dev.yslee.catchtrain.ui.MainScreen
 import dev.yslee.catchtrain.ui.theme.CatchTrainTheme
 import dev.yslee.catchtrain.viewmodel.WatchViewModel
+import dev.yslee.catchtrain.watcher.LogCode
 import dev.yslee.catchtrain.webview.KtxPopupHost
 import dev.yslee.catchtrain.webview.KtxWebViewFactory
 import dev.yslee.catchtrain.webview.KtxWebViewHost
@@ -60,14 +61,29 @@ class MainActivity : ComponentActivity() {
 
         webView = KtxWebViewFactory.create(this)
         // 팝업(달력 등)이 떠 있는 동안에는 자동 조회를 하지 않는다. (KtxPopupHost 주석 참고)
-        popupHost = KtxPopupHost(webView)
-        host = KtxWebViewHost(webView, isPopupOpen = { popupHost.isOpen })
+        // 페이지 안에서 난 JS 오류도 같은 클라이언트로 들어온다. 역/지역 선택 창처럼
+        // 페이지가 스스로 그리는 화면이 안 뜰 때, 원인이 남는 곳은 그 로그뿐이다. (§38-10)
+        popupHost = KtxPopupHost(
+            parent = webView,
+            onConsoleError = { detail -> viewModel.logger.log(LogCode.PAGE_CONSOLE, detail) },
+        )
+        host = KtxWebViewHost(
+            webView = webView,
+            isPopupOpen = { popupHost.isOpen },
+            onViewportFix = { detail -> viewModel.logger.log(LogCode.VIEWPORT_FIX, detail) },
+            // 메인에서 비로그인이면 로그인 화면으로 보낸다. 사용자가 누르지 않았는데
+            // 화면이 바뀌는 자리라 판정 근거를 로그에 남긴다. (§27-2)
+            onLoginRedirect = { detail -> viewModel.logger.log(LogCode.LOGIN_REDIRECT, detail) },
+        )
         viewModel.attachHost(host)
 
         requestNotificationPermissionIfNeeded()
         keepScreenOnWhileWatching()
         handleNotificationIntent(intent)
 
+        // 이 시점의 WebView 는 아직 어디에도 붙지 않아 높이가 0 이다.
+        // 기다리는 일은 [KtxWebViewHost.loadStartUrl] 안에 있다 — 설정 화면의
+        // [시작 페이지로] 도 같은 위험을 안고 있어서, 부르는 쪽마다 두면 새는 곳이 생긴다.
         if (savedInstanceState == null) {
             lifecycleScope.launch { host.loadStartUrl() }
         }
@@ -141,6 +157,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         // 팝업이 부모보다 먼저 정리되어야 한다.
+        // host 도 WebView 보다 먼저다 — 로그인 확인 코루틴이 남아 있으면 이미 파괴된
+        // WebView 에 스크립트를 던진다. (§27-2)
+        host.dispose()
         popupHost.destroy()
         (webView.parent as? ViewGroup)?.removeView(webView)
         webView.destroy()
@@ -150,7 +169,7 @@ class MainActivity : ComponentActivity() {
     /**
      * 감시 중에는 화면이 꺼지지 않게 한다.
      *
-     * 이 앱은 화면에 그려진 [조회하기] 버튼을 실제 좌표로 눌러 갱신하므로,
+     * 이 앱은 화면에 보이는 코레일 페이지를 새로고침해 갱신하므로,
      * 화면이 꺼지면 Activity 가 ON_STOP 이 되어 감시가 그대로 멈춘다. (§24, §26)
      * 화면 시간 초과로 감시가 끊기는 것을 막기 위한 것이다.
      *

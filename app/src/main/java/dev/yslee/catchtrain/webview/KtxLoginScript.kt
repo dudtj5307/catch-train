@@ -41,6 +41,20 @@ import org.json.JSONTokener
  * 링크를 못 찾았을 때만 문구로 판정하고, 그때도 공백을 지운 뒤 **완전 일치**로 본다.
  * 부분 일치를 쓰면 "간편로그인 설정" 같은 메뉴에 걸린다.
  *
+ * ## 보이는지는 따지지 않는다 (2026-08-29 실측)
+ *
+ * 이 판정은 **DOM 에 있는가**만 본다. 화면에 그려져 있는지는 보지 않는다.
+ *
+ * 폰 폭(375px)에서 `ul.h_top_right` 와 `div.header_top` 은 **`display:none`** 이다.
+ * `a.btnGoLogin` 은 DOM 에 멀쩡히 있지만 rect 가 0×0 이고 `offsetParent` 도 없다.
+ * [열차조회] 버튼과 같은 함정이다 (§38-9). 모바일에서 눈에 보이는 로그인 표시는
+ * **하나도 없다** — 로그인/로그아웃 문구는 전체메뉴(`div.allmenu`, 역시 `display:none`)
+ * 안에만 있다.
+ *
+ * 그래서 예전처럼 "보이는 것만" 세면 두 링크가 모두 안 잡혀 **항상 `UNKNOWN`** 이 되고,
+ * 로그인 확인이 통째로 죽는다. 앱의 WebView 는 언제나 폰 폭이므로 **항상** 그랬다.
+ * 대신 판정 근거가 숨어 있었는지를 `detail` 에 남겨 로그에서 알아볼 수 있게 한다.
+ *
  * 판정은 세 갈래다.
  *  - `LOGGED_IN`  : 로그아웃 쪽만 있다.
  *  - `LOGGED_OUT` : 로그인 쪽만 있다.
@@ -62,6 +76,7 @@ object KtxLoginScript {
         val config = buildString {
             append("{")
             append("scopes:").append(jsArray(KtxSelectors.LoginIndicator.HEADER_SCOPES)).append(",")
+            append("menuScopes:").append(jsArray(KtxSelectors.LoginIndicator.MENU_SCOPES)).append(",")
             append("logoutLinks:").append(jsArray(KtxSelectors.LoginIndicator.LOGOUT_LINK)).append(",")
             append("loginLinks:").append(jsArray(KtxSelectors.LoginIndicator.LOGIN_LINK)).append(",")
             append("logoutTexts:").append(jsArray(KtxSelectors.LoginIndicator.LOGOUT_TEXTS)).append(",")
@@ -89,8 +104,10 @@ object KtxLoginScript {
 
       /**
        * 화면에 실제로 그려져 있는 요소인가.
-       * display:none / visibility:hidden 으로 숨긴 중복 메뉴(모바일용 등)를 걸러낸다.
-       * 스크롤로 화면 밖에 있는 것은 여기서 걸러지지 않는다. 그래도 된다.
+       *
+       * **판정에는 쓰지 않는다.** 폰 폭에서는 머리말 전체가 display:none 이라
+       * 로그인 표시가 하나도 "보이지" 않기 때문이다 (2026-08-29 실측).
+       * 로그에 남길 detail 을 꾸미는 데만 쓴다.
        */
       function isShown(el) {
         if (!el) return false;
@@ -125,25 +142,31 @@ object KtxLoginScript {
         var text = textOf(el);
         var href = '';
         try { href = (el.getAttribute('href') || '').slice(-40); } catch (e) { href = ''; }
-        return (text || '(문구없음)') + (href ? ' href=' + href : '');
+        return (text || '(문구없음)') + (href ? ' href=' + href : '') +
+               (isShown(el) ? '' : ' (숨김)');
       }
 
-      // 머리말 영역을 앞에서부터 찾는다. 하나도 없으면 문서 전체를 본다.
-      var scopeName = null;
-      var scopes = [];
-      for (var s = 0; s < CFG.scopes.length && scopes.length === 0; s++) {
-        try {
-          var nodes = document.querySelectorAll(CFG.scopes[s]);
-          for (var n = 0; n < nodes.length; n++) {
-            if (isShown(nodes[n])) scopes.push(nodes[n]);
-          }
-          if (scopes.length > 0) scopeName = CFG.scopes[s];
-        } catch (e) { /* 잘못된 selector 무시 */ }
+      /** selector 목록 중 **처음으로 걸리는** 것의 요소들을 모은다. 보이는지는 보지 않는다. */
+      function collect(selectors) {
+        for (var s = 0; s < selectors.length; s++) {
+          var found = [];
+          try {
+            var nodes = document.querySelectorAll(selectors[s]);
+            for (var n = 0; n < nodes.length; n++) found.push(nodes[n]);
+          } catch (e) { continue; /* 잘못된 selector 무시 */ }
+          if (found.length > 0) return { name: selectors[s], nodes: found };
+        }
+        return null;
       }
-      if (scopes.length === 0) {
-        scopes = [document.body];
-        scopeName = 'body';
-      }
+
+      // 머리말 영역. 하나도 없으면 문서 전체를 본다.
+      var head = collect(CFG.scopes);
+      var scopeName = head ? head.name : 'body';
+      var scopes = head ? head.nodes : [document.body];
+
+      // 문구 판정에만 함께 보는 모바일 전체메뉴 영역.
+      var menu = collect(CFG.menuScopes);
+      var textScopes = menu ? scopes.concat(menu.nodes) : scopes;
 
       /** 1순위: 상태와 1:1 인 링크 selector. (§38-7) */
       function findLink(selectors) {
@@ -151,9 +174,7 @@ object KtxLoginScript {
           for (var j = 0; j < selectors.length; j++) {
             var nodes;
             try { nodes = scopes[i].querySelectorAll(selectors[j]); } catch (e) { continue; }
-            for (var k = 0; k < nodes.length; k++) {
-              if (isShown(nodes[k])) return nodes[k];
-            }
+            if (nodes.length > 0) return nodes[0];
           }
         }
         return null;
@@ -161,15 +182,18 @@ object KtxLoginScript {
 
       var scanned = 0;
 
-      /** 2순위: 문구 완전 일치. 링크 selector 가 둘 다 빗나갔을 때만 쓴다. */
+      /**
+       * 2순위: 문구 완전 일치. 링크 selector 가 둘 다 빗나갔을 때만 쓴다.
+       * 머리말과 모바일 전체메뉴를 함께 본다 — 전체메뉴 버튼은 **문구가** 상태를
+       * 따라 바뀐다. (클래스 이름은 고정이라 못 쓴다, §38-7)
+       */
       function findByText(texts) {
-        for (var i = 0; i < scopes.length; i++) {
+        for (var i = 0; i < textScopes.length; i++) {
           var nodes;
           try {
-            nodes = scopes[i].querySelectorAll('a, button, input[type=submit], input[type=button]');
+            nodes = textScopes[i].querySelectorAll('a, button, input[type=submit], input[type=button]');
           } catch (e) { continue; }
           for (var j = 0; j < nodes.length; j++) {
-            if (!isShown(nodes[j])) continue;
             scanned++;
             if (textHits(nodes[j], texts)) return nodes[j];
           }
@@ -195,7 +219,7 @@ object KtxLoginScript {
         state = 'LOGGED_OUT';
         detail = '로그인 ' + describe(login);
       } else if (login && logout) {
-        // 둘 다 보이면 우리가 읽는 방식이 이 화면에 맞지 않는다는 뜻이다. 막지 않는다.
+        // 둘 다 있으면 우리가 읽는 방식이 이 화면에 맞지 않는다는 뜻이다. 막지 않는다.
         state = 'UNKNOWN';
         detail = '로그인/로그아웃 둘 다 있음';
       } else {
@@ -206,7 +230,9 @@ object KtxLoginScript {
       return {
         state: state,
         detail: detail + ' / ' + how + ' scope=' + scopeName +
-                (how === 'text' ? ' 요소' + scanned + '개' : ''),
+                (how === 'text'
+                  ? (menu ? '+' + menu.name : '') + ' 요소' + scanned + '개'
+                  : ''),
         url: location.href
       };
     })();

@@ -12,6 +12,7 @@ import dev.yslee.catchtrain.storage.AppSettings
 import dev.yslee.catchtrain.storage.SettingsRepository
 import dev.yslee.catchtrain.watcher.ReloadScheduler
 import dev.yslee.catchtrain.watcher.WatchController
+import dev.yslee.catchtrain.watcher.LogCode
 import dev.yslee.catchtrain.watcher.WatchLogEntry
 import dev.yslee.catchtrain.watcher.WatchLogger
 import dev.yslee.catchtrain.watcher.WatchStatus
@@ -38,6 +39,9 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
     val logger = WatchLogger()
 
     private var controller: WatchController? = null
+
+    /** 진단용으로만 직접 쓴다. 감시는 전부 [controller] 를 거친다. (§38-10) */
+    private var host: PageHost? = null
 
     private val _settings = MutableStateFlow(AppSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -73,6 +77,7 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
     /** WebView 가 준비되면 Activity 가 한 번 호출한다. */
     fun attachHost(host: PageHost) {
         if (controller != null) return
+        this.host = host
         val created = WatchController(
             host = host,
             parser = KtxParser(),
@@ -228,8 +233,34 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
         _toast.value = null
     }
 
+    /** 화면에서 벌어진 일(로그 복사 등)을 짧게 알린다. */
+    fun notify(message: String) {
+        _toast.value = message
+    }
+
     fun clearLogs() {
         logger.clear()
+    }
+
+    /**
+     * 역 선택 창이 안 뜨는 원인을 로그에 한 줄 남긴다. (DESIGN.md §38-10)
+     *
+     * 이 창은 `window.open` 팝업이 아니라 **페이지가 스스로 그리는** react-modal 이라,
+     * 안 뜰 때 앱이 대신 띄워 줄 방법이 없다. 남는 일은 어디서 끊겼는지 보는 것뿐이다.
+     * 읽기만 하므로 조회 요청이 나가지 않는다 — 감시 중에 눌러도 된다.
+     *
+     * 쓰는 순서: **진단 → 역 버튼을 손으로 눌러 봄 → 진단**.
+     * 첫 번째가 탭 기록을 받을 준비를 하고, 두 번째가 그 탭이 어디까지 갔는지 알려준다.
+     */
+    fun probeStationPopup() {
+        val target = host
+        if (target == null) {
+            _toast.value = "WebView 준비 중입니다. 잠시 후 다시 시도하세요."
+            return
+        }
+        viewModelScope.launch {
+            logger.log(LogCode.STATION_PROBE, target.probeStationPopup())
+        }
     }
 
     fun dumpLogs(): String = logger.dump()
