@@ -13,6 +13,17 @@
       <button id="refresh" class="link">갱신</button>
     </header>
 
+    <!-- 감시 패널. 이 화면에서 시작하고 멈춘다. 조회는 코레일 화면에서 직접. (대원칙 4) -->
+    <section class="watch">
+      <div class="watch-line">
+        <span id="watch-state" class="watch-state">⚪ 대기</span>
+        <span id="watch-next" class="watch-next"></span>
+        <button id="watch-toggle" class="primary">감시 시작</button>
+      </div>
+      <p id="watch-message" class="watch-message" hidden></p>
+      <button id="login" class="link" hidden>로그인 화면 열기</button>
+    </section>
+
     <p id="notice" class="notice" hidden></p>
 
     <table id="table" hidden>
@@ -30,10 +41,17 @@
     <footer>
       <p id="warnings" class="warnings" hidden></p>
       <p class="hint">
-        체크한 칸이 열리면 알리고 그 칸을 골라 [예매] 까지만 누릅니다.
-        예약대기는 성격이 다른 신청이라 누르지 않습니다.
+        체크한 칸이 열리면 알립니다. 매진인 칸도 체크할 수 있습니다 —
+        지금 매진인 좌석이 풀리기를 기다리는 것이 이 도구의 목적입니다.
       </p>
-      <p class="hint stage">지금은 <b>판독까지만</b> 동작합니다. 감시는 아직 붙지 않았습니다.</p>
+      <p class="hint stage">
+        지금은 <b>알림까지만</b> 동작합니다. 좌석 칸과 [예매] 를 눌러 주는 것은 아직 없습니다.
+      </p>
+      <div class="log-head">
+        <button id="log-toggle" class="link">로그 보기</button>
+        <button id="log-clear" class="link" hidden>로그 지우기</button>
+      </div>
+      <pre id="log" class="log" hidden></pre>
     </footer>
 
     <script type="module" src="popup.js"></script>

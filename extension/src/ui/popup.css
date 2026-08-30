@@ -62,6 +62,78 @@ h1 {
 
 .link:disabled { color: var(--muted); cursor: default; }
 
+/* 감시 패널. 목록 위에 둔다 — 지금 감시 중인지가 가장 먼저 보여야 한다. */
+.watch {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.watch-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.watch-state { font-weight: 600; }
+
+.watch-next {
+  flex: 1;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.primary {
+  padding: 5px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.primary.stop {
+  border-color: var(--line);
+  background: none;
+  color: var(--fg);
+}
+
+.primary:disabled { opacity: 0.6; cursor: default; }
+
+.watch-message {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: pre-line;
+}
+
+.watch-message.bad { color: var(--warn); }
+.watch-message.good { color: var(--accent); }
+
+.log-head {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+/* 로그는 진단용이다. 대기 중이었는지 아닌지가 여기서만 갈린다. (§39-7) */
+.log {
+  max-height: 160px;
+  margin: 4px 0 0;
+  padding: 6px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  font: 10px/1.45 ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .notice {
   margin: 10px 0 0;
   padding: 8px 10px;

@@ -133,6 +133,18 @@ export const SeatCellClass = Object.freeze({
  */
 export const SEARCH_DATE_FIELDS = [];
 
+/**
+ * 사용자가 넣은 조회 조건이 통째로 들어 있는 `localStorage` 키. (§38-9)
+ *
+ * URL 에는 조회 조건이 하나도 없다. 새로고침해도 조건이 살아남는 이유가 이것이고,
+ * SPA 가 이 값으로 같은 조회를 스스로 되풀이한다.
+ *
+ * **확장은 이 값을 읽어서 해시만 만들고 버린다.** 조회 조건은 앱이 갖지 않는다
+ * (대원칙 4) — 필요한 것은 "감시를 시작할 때와 같은 조회인가" 뿐이다.
+ * (PLAN.md §E-6-3 예외 17, `content/ktx/query.js`)
+ */
+export const QUERY_STORAGE_KEY = 'LS_TICKET_GENERAL';
+
 // --- 예매 1단계 / 2단계 (§38-6) -------------------------------------------
 
 /** 예매 2단계 바. 1단계로 좌석 칸을 누르면 화면 최하단에 나타난다. */

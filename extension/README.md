@@ -3,9 +3,14 @@
 같은 목적의 PC 판. 코레일 조회 결과 화면을 감시하다가 체크해 둔 칸이 열리면 알리고
 그 칸을 골라 [예매] 를 눌러 준다.
 
-**지금은 M1(판독)까지 되어 있다.** 팝업이 지금 보고 있는 코레일 탭의 조회 결과를 읽어
-[열차 선택] 목록을 띄우고, 칸을 체크해 둘 수 있다.
-**사이트로 나가는 요청은 하나도 없다** — 새로고침도 클릭도 아직 없다.
+**지금은 M2(감시 + 알림)까지 되어 있다.** 팝업에서 칸을 체크하고 [감시 시작] 을 누르면
+사이클마다 탭을 새로고침하며 그 칸이 열리는지 보다가, 열리면 알림을 띄우고 멈춘다.
+
+**아직 아무것도 누르지 않는다.** 좌석 칸(1단계)과 [예매](2단계)는 클릭 드라이버를
+실측(M2.5)으로 정한 뒤 M3·M4 에서 붙는다 — 추측으로 기본값을 정하지 않기로 했다.
+그래서 **사이트로 나가는 요청은 새로고침 하나뿐**이고, 그 자리는
+`background/page-host.js` 의 `requery` 한 곳이다.
+
 남은 단계는 [`PLAN.md`](PLAN.md) §E-9.
 
 ---
@@ -31,8 +36,18 @@
 2. 툴바의 확장 아이콘을 눌러 팝업을 연다. 그 탭의 조회 결과가 목록으로 뜬다.
 3. 원하는 (열차 × 좌석등급) 칸을 체크한다. 매진인 칸도 체크할 수 있다 —
    **지금 매진인 좌석이 풀리기를 기다리는 것이 이 도구의 목적이다.**
+4. [감시 시작]. 좌석이 열리면 알림이 뜨고 감시가 멈춘다. **예매는 사람이 한다.**
 
 확장을 새로 로드했다면 코레일 탭도 한 번 새로고침해야 content script 가 붙는다.
+
+시작을 막는 경우가 셋 있다 — 체크한 칸 없음 / 다른 탭에서 이미 감시 중 /
+**비로그인**. 코레일은 비로그인에서도 조회가 되어서, 그대로 두면 좌석이 열린 바로 그
+순간에 로그인 화면으로 튕긴다 (§27-1). 그때는 팝업의 [로그인 화면 열기] 가 **새 탭**을
+연다 — 보고 있던 탭의 주소를 갈아 끼우면 조회 조건이 날아간다.
+
+무슨 일이 있었는지는 팝업 아래 **[로그 보기]** 에 남는다. 특히 접속 대기열에 걸렸을 때
+`PAGE_WAIT_START` 가 쌓이는 동안 **`RESEARCH_TRIGGERED` 가 한 줄도 없어야 한다** —
+대기 중에 새로고침하면 대기 순번이 날아간다. (§39-7)
 
 테스트는 Node 내장 러너로 돈다. 의존성이 0 이라 `npm install` 이 없다.
 
@@ -44,21 +59,36 @@ cd extension && node --test test/
 
 ```
 src/
-├── background/   service worker — 상태와 결정. index.js(라우팅) · store.js(storage.session)
-├── content/      DOM 판독 팔. index.js(진입) · ktx/{selectors,dom,parse,page-kind}.js
+├── background/   service worker — 상태와 결정
+│   ├── index.js          라우팅 · 탭 수명 · alarms 부활 그물 · 저장
+│   ├── watch-controller.js  ★ 감시 루프 전체. **chrome API 를 하나도 모른다**
+│   ├── page-host.js      chrome API 가 끊기는 자리. 새로고침은 여기 한 곳뿐
+│   ├── watch-config.js   루프 파라미터. 값마다 근거가 주석에 있다
+│   ├── watch-state.js    상태·오류. 팝업은 이 값만 본다
+│   ├── scheduler.js      간격(무작위) · sleep(AbortSignal)
+│   ├── logger.js  notifier.js  store.js
+├── content/      DOM 판독 팔
+│   ├── early.js          document_start. 스크롤 되살리기 끄기 하나뿐
+│   ├── index.js          진입 (import() 로 아래를 부른다)
+│   └── ktx/{selectors,dom,parse,page-kind,login,query}.js
 ├── domain/       ★ chrome API 도 DOM 도 모르는 순수 코드 (안드로이드 domain/ 과 같은 규칙)
 └── ui/           팝업
 test/             node --test. 안드로이드 단위 테스트를 그대로 옮긴 것이다 (§34-2)
 ```
 
 - **content script 는 판독만 한다.** 무엇을 언제 할지는 service worker 가 정한다.
+  (페이지를 건드리는 것은 `SCROLL_TOP` 하나뿐이고, 그것도 스크롤 위치다)
+- **`watch-controller.js` 는 `chrome.*` 를 부르지 않는다.** 그래서 브라우저 없이 통째로
+  테스트된다. 확장 API 는 `page-host.js` 와 `index.js` 에서만 쓴다 (§34-1).
 - **selector 는 `content/ktx/selectors.js` 한 곳에만.** 팝업도 SW 도 selector 를 모른다.
 - 선언된 content script 는 ES 모듈이 아니라서 `content/index.js` 가 `import()` 로 나머지를
   불러온다. 그래서 그 모듈들이 manifest 의 `web_accessible_resources` 에 있다.
 - **빌드 도구를 두지 않는다.** 순수 ES 모듈이면 번들러 없이 돈다.
-- 권한은 **그 단계에서 실제로 쓰는 것만** 넣는다. 지금은 `storage` 와 코레일 host permission
-  뿐이다. `notifications`·`alarms`·`offscreen` 은 감시(M2)와 함께, `debugger` 는 실측 뒤에
-  **선택 권한**으로 (PLAN.md §E-2, §E-8).
+- 권한은 **그 단계에서 실제로 쓰는 것만** 넣는다. 지금은 `storage`·`notifications`·`alarms`
+  와 코레일 host permission 이다. `offscreen`(알림 소리)은 결제 재촉과 함께 M4 에,
+  `debugger` 는 실측 뒤에 **선택 권한**으로 (PLAN.md §E-2, §E-8).
+  `alarms` 는 **감시 주기가 아니다** — 최소 30초라 그럴 수 없고, service worker 가 죽었을
+  때를 위한 부활 그물이다 (§E-3-2).
 
 ## 안드로이드와 갈리는 지점
 
@@ -78,7 +108,7 @@ test/             node --test. 안드로이드 단위 테스트를 그대로 옮
       이 문서에는 적지 않는다 (사이트에 대한 사실은 한 벌만)
 - [ ] 웹스토어에 올릴지, 압축해제 로드로만 쓸지
       (안드로이드는 Play 스토어를 포기했다 → [`../android/RELEASE.md`](../android/RELEASE.md))
-- [ ] 아이콘. `chrome.notifications` 가 요구한다 (M2)
+- [x] 아이콘 (`icons/icon{16,48,128}.png`). `chrome.notifications` 가 요구한다
 
 ### 안 가져오는 것
 

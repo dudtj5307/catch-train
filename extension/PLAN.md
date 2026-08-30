@@ -3,8 +3,10 @@
 **이 문서는 구현이 끝나면 지운다.** 진행 중에만 의미가 있다.
 (`docs/KTX-MIGRATION.md` 와 같은 성격의 인수인계 문서다)
 
-> **진행: M1 완료 (2026-08-30).** 판독·`domain/`·팝업 목록·테스트까지. 사이트로 나가는
-> 요청은 아직 하나도 없다. 다음은 M2(감시 루프) — 아래 §E-9 와 "다음 세션의 첫 걸음" 참조.
+> **진행: M2 완료 (2026-08-30).** 감시 루프·알림·대기열 대응·부활 그물까지.
+> **여기서부터 사이트로 요청이 나간다** — 새로고침 하나뿐이고 자리는
+> `background/page-host.js` 의 `requery` 한 곳이다. 아직 아무것도 누르지 않는다.
+> 다음은 M2.5(클릭 드라이버 실측) — 아래 §E-9 와 "다음 세션의 첫 걸음" 참조.
 
 먼저 읽을 것 — **여기에 복사하지 않는다.**
 
@@ -193,8 +195,8 @@ MV3 SW 는 30초 놀면 죽는다. 다만 **감시 중에는 사실상 놀지 �
 확장에서는 (a) 를 "content script 에 두지 않는다" 로 읽는다. SW 의 `await sleep(random)` 은
 페이지 밖이고, `AbortController` 로 즉시 끊긴다. 셋 다 지켜진다.
 
-> 다음 세션에서 `CLAUDE.md` 대원칙 7 에 이 한 줄을 덧붙일 값어치가 있다.
-> 지금 문장은 안드로이드만 있을 때 쓴 것이라 확장에서 오독될 여지가 있다.
+> **반영됨** — `CLAUDE.md` 대원칙 7 에 이 문장이 들어가 있다.
+> 구현은 `background/scheduler.js` 다 (`sleep(ms, signal)` + `ReloadScheduler`).
 
 ---
 
@@ -257,20 +259,21 @@ MV3 SW 는 30초 놀면 죽는다. 다만 **감시 중에는 사실상 놀지 �
 
 ### 메시지 프로토콜 (SW → content script)
 
-전부 **읽기**이고, 유일하게 페이지를 건드리는 것은 `TAP_SYNTHETIC` 하나다.
+전부 **읽기**이고, 유일하게 페이지를 건드리는 것은 `SCROLL_TOP`(스크롤 위치)과,
+나중에 붙을 `TAP_SYNTHETIC` 하나다. **✅ 는 M2 에서 구현된 것.**
 
 | 메시지 | 안드로이드 대응 | 돌려주는 것 |
 |---|---|---|
-| `PARSE` | `KtxParserScript.build()` | `PageSnapshot` (status·trains·rowRefs·warnings) |
-| `PAGE_KIND` | `buildPageKindScript` | `{list, rows, sig}` — 가벼운 판정 + DOM 서명 |
-| `LOGIN` | `KtxLoginScript.build()` | `{state, detail}` |
-| `QUERY_SIG` | (없음, ★ 신규) | `LS_TICKET_GENERAL` **해시만.** 원문도 안 보내고 쓰지도 않는다 |
+| ✅ `PARSE` | `KtxParserScript.build()` | `PageSnapshot` (status·trains·rowRefs·warnings) |
+| ✅ `PAGE_KIND` | `buildPageKindScript` | `{list, rows, sig}` — 가벼운 판정 + DOM 서명 |
+| ✅ `LOGIN` | `KtxLoginScript.build()` | `{state, detail}` |
+| ✅ `QUERY_SIG` | (없음, ★ 신규) | `LS_TICKET_GENERAL` **해시만.** 원문도 안 보내고 쓰지도 않는다 |
+| ✅ `SCROLL_TOP` | `buildScrollTopScript` | scrollRestoration 끄기 + 맨 위로. (설계 때 `PREP_RELOAD` 라 부르던 것. 새로고침 **직전**과 목록이 그려진 **뒤** 두 번 쓰므로 이름을 바꿨다 — §38-9 의 세 자리 중 둘이고, 나머지 하나가 `content/early.js` 다) |
 | `SELECT_LOCATE` | `buildSelectScript` | `{found, tappable, x, y, reason…}` |
 | `SELECT_CONFIRM` | `buildSelectConfirmScript` | `{selected, activeCount, detail}` |
 | `RESERVE_LOCATE` | `buildReserveScript` | `{found, tappable, x, y, label, barLabel}` |
 | `RESERVE_RESULT` | `buildReserveResultScript` | `{soldOut, detail}` |
 | `TAP_CONFIRM` | `buildTapConfirmScript` | `{fired, trusted, onTarget}` ← **드라이버 검증의 핵심** |
-| `PREP_RELOAD` | `buildScrollTopScript` | scrollRestoration 끄기 |
 | `TAP_SYNTHETIC` | (없음, ★ synthetic 드라이버 전용) | `el.click()` 실행 |
 
 ---
@@ -502,10 +505,18 @@ extension/
 ### 권한
 
 ```jsonc
-"permissions":  ["notifications", "storage", "alarms", "offscreen", "scripting"],
-"optional_permissions": ["debugger"],        // ★ 실측 전까지 요구하지 않는다
+// M2 현재 (실제 manifest)
+"permissions":  ["storage", "notifications", "alarms"],
 "host_permissions": ["https://www.korail.com/*"]
+
+// 나중에 붙는 것
+// "offscreen"            결제 재촉 알림의 소리 (M4, §E-6-4)
+// "scripting"            content script 를 뒤늦게 꽂아야 할 때만. 지금은 필요 없다
+// "optional_permissions": ["debugger"]   ★ 실측(M2.5) 뒤에, 그것도 선택 권한으로
 ```
+
+`alarms` 는 **감시 주기가 아니다.** 최소 30초라 그럴 수 없고, service worker 가 죽었을
+때를 위한 부활 그물이다 (§E-3-2). 감시 중에만 걸고 루프가 끝나면 걷는다.
 
 - **`debugger` 는 `optional_permissions` 다.** 설치할 때부터 "브라우저 디버깅" 권한을 요구하면
   대부분의 사용자가 거기서 멈춘다. synthetic 이 통하면 영영 안 물어봐도 된다 (§E-2-4).
@@ -531,7 +542,7 @@ extension/
 | | 무엇 | 끝났다고 할 수 있는 조건 |
 |---|---|---|
 | **M1** ✅ | 판독만. 팝업에 [열차 선택] 목록이 뜬다 | 조회 결과 화면에서 편성·번호·시각·좌석 상태가 안드로이드와 **같은 값**으로 읽힌다. **아무것도 누르지 않고 새로고침도 안 한다** |
-| **M2** | 감시 루프 + 알림 | 체크한 칸이 열리면 알림. 대기열이 걸리면 `PAGE_WAIT_*` 가 쌓이고 **그 사이 새로고침이 한 줄도 안 나간다** (§E-6-1) |
+| **M2** ✅ | 감시 루프 + 알림 | 체크한 칸이 열리면 알림. 대기열이 걸리면 `PAGE_WAIT_*` 가 쌓이고 **그 사이 새로고침이 한 줄도 안 나간다** (§E-6-1) |
 | **M2.5** | **실측 M-a / M-b** (§E-2-4) | 클릭 드라이버 기본값이 정해진다. 결과는 `DESIGN.md §38-8` 에 |
 | **M3** | 1단계 (좌석 칸 고르기) | 좌석이 열리면 그 칸에 `active` 가 붙고 하단 바가 뜬다. 2단계는 사람이 — 즉 **항상 인계로 끝난다** |
 | **M4** | 2단계 [예매] + 잔여석없음 경로 | 실측 M-c 통과. `goBack` 후 목록 복귀 확인. 결제 재촉 알림 |
@@ -543,19 +554,28 @@ M3 이 "항상 인계로 끝난다" 인 것이 중요하다. **1단계는 되돌
 
 ### 다음 세션의 첫 걸음
 
-**M1 은 끝났다.** 실제 코레일 화면에 대고 한 번 확인하는 것이 M2 보다 먼저다 —
-지금 확장은 새로고침도 클릭도 하지 않으므로 그 확인에는 요청이 나가지 않는다.
+**M2 까지 끝났다.** 코드는 다 있지만 **실제 코레일에 대고는 한 번도 돌려 보지 않았다.**
+안드로이드가 겪은 것과 같은 상태다(`docs/KTX-MIGRATION.md` "남은 일 1").
+다음은 실기기 확인이고, 그 다음이 M2.5 실측이다.
 
 1. 이 문서와 `docs/DESIGN.md §38·§39` 를 읽는다.
-2. **M1 확인** — 실제 조회 결과 화면에서 팝업 목록이 안드로이드와 **같은 값**으로 뜨는지.
-   특히 `sold_out_soon`(매진임박) 칸이 **예약가능**으로, 같은 시각의 두 편성이 **다른 열차**로
-   읽히는지. 어긋나면 고칠 곳은 `content/ktx/selectors.js` 와 `content/ktx/parse.js` 뿐이다.
-3. **M2** — `background/watch-controller.js` · `watch-config.js` · `watch-state.js` ·
-   `scheduler.js` · `page-host.js` · `logger.js` · `notifier.js`.
-   안드로이드 `WatchControllerTest` 의 케이스를 `test/watch-controller.test.mjs` 로 옮기고
-   `PageHost` 를 가짜로 갈아 끼운다. **여기서부터 사이트로 요청이 나간다** — 대원칙 2.
-   `notifications`·`alarms`·`offscreen` 권한과 아이콘도 이때 붙는다.
-4. **M2.5 실측**(§E-2-4) 전에는 `ClickDriver` 를 만들지 않는다. 추측으로 기본값을 정하지 말 것.
+2. **M1 확인 (요청이 나가지 않는다)** — 실제 조회 결과 화면에서 팝업 목록이 안드로이드와
+   **같은 값**으로 뜨는지. 특히 `sold_out_soon`(매진임박) 칸이 **예약가능**으로, 같은 시각의
+   두 편성이 **다른 열차**로 읽히는지. 어긋나면 고칠 곳은 `content/ktx/selectors.js` 와
+   `content/ktx/parse.js` 뿐이다.
+3. **M2 확인 (여기서부터 요청이 나간다 — 대원칙 2, 짧은 간격으로 되풀이하지 말 것)**
+   - 로그아웃 상태로 [감시 시작] → 막히고 [로그인 화면 열기] 가 뜨는가.
+   - 감시 시작 → `RESEARCH_TRIGGERED` 가 사이클마다 **한 줄씩만** 나오는가.
+     조회 조건(구간·날짜·시각·인원)이 새로고침 뒤에도 그대로인가.
+     → 아니면 `localStorage["LS_TICKET_GENERAL"]` 부터 본다.
+   - `researchSettleMs`(12초) 안에 목록이 다시 그려지는가. `PAGE_SETTLE_TIMEOUT` 이 계속
+     뜨면 **간격이 아니라 이 값을** 늘린다.
+   - **접속 대기열에 걸렸을 때** — `PAGE_WAIT_START` → `PAGE_WAIT_TICK` 이 쌓이는 동안
+     `RESEARCH_TRIGGERED` 가 **한 줄도 없어야 한다.** 있으면 대기 순번이 날아간다. (§39-7)
+   - 좌석이 열리면 알림이 뜨고 감시가 멈추는가.
+   - 사이트에서 조회 조건을 바꿔 보기 → `QUERY_CHANGED` 로 멈추고 체크가 비워지는가.
+4. **M2.5 실측**(§E-2-4). 그 전에는 `ClickDriver` 를 만들지 않는다. 추측으로 기본값을
+   정하지 말 것. **devtools 를 연 채로 예매를 시도하지 말 것** (§38-10 매크로 감지).
 
 ---
 
