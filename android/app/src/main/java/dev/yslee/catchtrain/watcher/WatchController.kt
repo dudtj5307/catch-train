@@ -960,6 +960,11 @@ class WatchController(
             is ReserveOutcome.Mismatch ->
                 handOverToUser(candidate, ReserveResult.MISMATCH, config, outcome.detail)
 
+            // 안내 창이 가로막았고 그 창은 우리가 아는 창이 아니다. 화면의 [확인] 을
+            // 사람이 눌러 주면 그대로 이어진다. (§38-6-2)
+            is ReserveOutcome.NoticeBlocked ->
+                handOverToUser(candidate, ReserveResult.NOTICE_BLOCKED, config, outcome.detail)
+
             is ReserveOutcome.ButtonNotFound ->
                 handOverToUser(candidate, ReserveResult.BUTTON_NOT_FOUND, config, outcome.detail)
 
@@ -991,6 +996,15 @@ class WatchController(
         detail: String,
     ): ReserveStep {
         logger.log(LogCode.RESERVE_HANDOVER, "${result.name} $detail")
+
+        // 무엇을 눌러야 하는지가 경우마다 다르다. 안내 창에 가로막힌 경우 눌러야 할 것은
+        // [예매] 가 아니라 그 창의 [확인] 이다. (§38-6-2)
+        val guide = if (result == ReserveResult.NOTICE_BLOCKED) {
+            "화면에 뜬 안내 창의 [확인] 을 직접 눌러 주세요."
+        } else {
+            "화면 아래 [예매] 를 직접 눌러 주세요."
+        }
+
         updateStatus {
             copy(
                 state = WatchState.SEAT_SELECTED,
@@ -1003,7 +1017,7 @@ class WatchController(
                     detail = detail,
                 ),
                 message = "${match.train.summary()} ${match.seatClass.label} 좌석을 골라 뒀습니다. " +
-                    "화면 아래 [예매] 를 직접 눌러 주세요. (${result.label})",
+                    "$guide (${result.label})",
             )
         }
         startReserveReminder(match, config)

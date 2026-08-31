@@ -42,6 +42,7 @@ class KtxParserScriptTest {
             KtxParserScript.buildSelectConfirmScript(target),
             KtxParserScript.buildReserveScript(1080, 1920, target),
             KtxParserScript.buildReserveResultScript(),
+            KtxParserScript.buildNoticePopupScript(1080, 1920),
             KtxParserScript.buildObserverScript(),
             KtxParserScript.buildProbeScript(),
             KtxParserScript.buildPageKindScript(),
@@ -113,6 +114,7 @@ class KtxParserScriptTest {
             KtxParserScript.buildSelectConfirmScript(target),
             KtxParserScript.buildReserveScript(1080, 1920, target),
             KtxParserScript.buildReserveResultScript(),
+            KtxParserScript.buildNoticePopupScript(1080, 1920),
             KtxParserScript.buildObserverScript(),
             KtxParserScript.buildProbeScript(),
             KtxParserScript.buildPageKindScript(),
@@ -185,5 +187,47 @@ class KtxParserScriptTest {
 
         assertTrue(script.contains("div.tckWrap"))
         assertTrue(script.contains("state.sig = ktxSignature()"))
+    }
+
+    /**
+     * [예매] 뒤에 끼어드는 안내 창은 **제목과 버튼 문구가 완전일치할 때만** 누른다.
+     * (§38-6-2)
+     *
+     * 넓게 잡으면 차단 안내나 예약실패 안내의 [확인] 까지 누르게 되는데, 그 [확인] 은
+     * 조회 폼을 새로 여는 링크라 **사용자가 넣어 둔 조회 조건을 통째로 날린다** (대원칙 5).
+     */
+    @Test
+    fun `안내 창은 제목과 버튼 문구가 완전일치할 때만 누른다`() {
+        val script = KtxParserScript.buildNoticePopupScript(1080, 1920)
+
+        assertTrue(script.contains("ReactModal__Overlay"))
+        assertTrue(script.contains("이용안내"))
+        assertTrue(script.contains("확인"))
+        // 부분일치로 바뀌면 아는 창이 아닌 것까지 누르게 된다.
+        assertTrue("제목 완전일치가 없다", script.contains("title === ktxNorm(CFG.titles[t])"))
+        assertTrue("버튼 완전일치가 없다", script.contains("label === ktxNorm(CFG.texts[y])"))
+        listOf("TITLE_MISMATCH", "NOT_ALLOWED", "BUTTON_AMBIGUOUS").forEach {
+            assertTrue("판정 이유가 빠졌다: $it", script.contains(it))
+        }
+    }
+
+    /** 차단·예약실패 안내의 [확인] 은 조회 조건을 날린다. 그런 창은 아예 손대지 않는다. */
+    @Test
+    fun `안내 창 스크립트는 차단과 예약실패 문구를 만나면 손을 뗀다`() {
+        val script = KtxParserScript.buildNoticePopupScript(1080, 1920)
+
+        assertTrue(script.contains("REFUSED"))
+        assertTrue(script.contains("잔여석없음"))
+        assertTrue(script.contains("매크로"))
+    }
+
+    /** 탐색 스크립트는 좌표만 돌려준다. 클릭은 Kotlin 쪽 진짜 터치가 한다. (대원칙 1) */
+    @Test
+    fun `안내 창 스크립트는 아무것도 클릭하지 않는다`() {
+        val script = KtxParserScript.buildNoticePopupScript(1080, 1920)
+
+        listOf(".click(", "dispatchEvent", "submit(", "location.href =").forEach { forbidden ->
+            assertFalse("스크립트가 페이지를 건드린다: $forbidden", script.contains(forbidden))
+        }
     }
 }

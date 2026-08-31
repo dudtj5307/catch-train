@@ -544,6 +544,11 @@ class KtxWebViewHost(
      * 스크립트가 확인 세 가지를 모두 통과했을 때만 좌표를 돌려주므로, 여기서는
      * 좌표가 왔는지만 보면 된다. 확인에 걸린 경우는 이유별로 나눠서 올린다 —
      * **누르지 않은 것과 누르고 실패한 것은 다른 사건이다.**
+     *
+     * 열차에 따라 **[예매] 와 결제 화면 사이에 안내 창이 하나 끼어든다.** 그 창의
+     * [확인] 을 누르기 전에는 아무 일도 일어나지 않으므로, 누르기 전과 기다리는 동안
+     * 그 창이 떠 있는지 함께 살핀다. 알아보지 못한 창이면 누르지 않고
+     * [ReserveOutcome.NoticeBlocked] 로 사람에게 넘긴다. (§38-6-2)
      */
     override suspend fun confirmReserve(
         target: ReserveTarget,
@@ -560,6 +565,12 @@ class KtxWebViewHost(
         val surface = readSurface()
         if (!surface.usable) {
             return ReserveOutcome.NotTappable("WebView 를 누를 수 없음 (${surface.describe()})")
+        }
+
+        // 1단계를 누르는 사이에 안내 창이 떠서 하단 바를 덮고 있을 수 있다.
+        // 그 창을 먼저 치우지 않으면 [예매] 는 가려진 채로 눌리지 않는다. (§38-6-2)
+        readNoticePopup(surface)?.let { popup ->
+            tapNotice(popup, surface, onClick)?.let { return ReserveOutcome.NoticeBlocked(it) }
         }
 
         val located = evaluateJson(
@@ -582,7 +593,19 @@ class KtxWebViewHost(
             return ReserveOutcome.NotTappable("터치가 전달되지 않음 (${tap.describe()})")
         }
 
-        val outcome = awaitSettled(timeoutMs, settleTimeoutMs, baselineSig)
+        // 화면이 정착하기를 기다린다. 기다리는 동안 **안내 창이 가로막는지** 함께 살핀다 —
+        // 그 창의 [확인] 을 누르기 전에는 화면이 넘어가지 않는다. (§38-6-2)
+        val wait = confirmSettleWithNotice(
+            surface = surface,
+            timeoutMs = timeoutMs,
+            settleTimeoutMs = settleTimeoutMs,
+            baselineSig = baselineSig,
+            onClick = onClick,
+        )
+        val outcome = when (wait) {
+            is ReserveWait.Blocked -> return ReserveOutcome.NoticeBlocked(wait.detail)
+            is ReserveWait.Settled -> wait.outcome
+        }
 
         // 화면이 넘어갔다고 예약 화면인 것은 아니다. "잔여석없음" 안내일 수 있다. (§19-2)
         if (outcome !is PageOutcome.Failed) {
@@ -596,6 +619,183 @@ class KtxWebViewHost(
             // 눌렀는데 아무 변화가 없다. 그사이 좌석이 나갔을 수 있다.
             else -> ReserveOutcome.NoChange(outcome.detail)
         }
+    }
+
+    // ---------------------------------------------------------------- 안내 창 (§38-6-2)
+
+    /**
+     * [예매] 를 누른 뒤 화면이 정착하기를 기다리되, **안내 창이 끼어들면 [확인] 을 누른다.**
+     * (§38-6-2)
+     *
+     * 안내 창은 `document.body` 에 붙는 react-modal 이라 목록 서명에도 MutationObserver
+     * 에도 잡히지 않는다. 그냥 기다리면 예산을 통째로 버린 뒤 "화면이 안 바뀜" 으로
+     * 끝난다 — 좌석을 잡을 수 있었던 그 순간에.
+     *
+     * 그래서 정착을 기다리는 폴링마다 창이 떴는지 읽는다. 읽기뿐이라 요청은 나가지
+     * 않는다. 창이 뜨면 기다림을 끊고 [확인] 을 누른 뒤 **예산을 처음부터 다시 잡는다** —
+     * 진짜 기다림은 [확인] 을 누른 다음에 시작되기 때문이다.
+     *
+     * 알아보지 못한 창이면 누르지 않고 곧바로 [ReserveWait.Blocked] 로 올린다.
+     * 그 화면은 사람이 손대기 전에는 넘어가지 않으므로 기다릴 값어치가 없고,
+     * 빨리 넘길수록 사용자가 결제 재촉 알림을 빨리 받는다.
+     */
+    private suspend fun confirmSettleWithNotice(
+        surface: Surface,
+        timeoutMs: Long,
+        settleTimeoutMs: Long,
+        baselineSig: String,
+        onClick: (String) -> Unit,
+    ): ReserveWait {
+        var confirmed = 0
+        var popup: JSONObject? = null
+
+        while (true) {
+            popup = null
+            val outcome = awaitSettled(timeoutMs, settleTimeoutMs, baselineSig) {
+                readNoticePopup(surface)?.let { found ->
+                    popup = found
+                    describeNotice(found)
+                }
+            }
+
+            val blocking = popup
+            if (outcome !is PageOutcome.Deferred || blocking == null) {
+                return ReserveWait.Settled(outcome)
+            }
+            if (confirmed >= MAX_NOTICE_CONFIRMS) {
+                return ReserveWait.Blocked(
+                    "[확인] 을 ${confirmed}번 눌렀는데도 안내 창이 떠 있음 " +
+                        "(${describeNotice(blocking)})",
+                )
+            }
+
+            tapNotice(blocking, surface, onClick)?.let { return ReserveWait.Blocked(it) }
+            confirmed++
+        }
+    }
+
+    /**
+     * 지금 떠 있는 안내 창. 없으면 null. **아무것도 누르지 않고 읽기만 한다.**
+     *
+     * 알아보지 못한 창(제목이 다르거나 버튼이 여럿)도 그대로 돌려준다.
+     * 누를지 말지는 [tapNotice] 가 정한다 — 여기서 걸러 버리면 "무엇이 가로막았는지"
+     * 가 로그에서 사라진다.
+     */
+    private suspend fun readNoticePopup(surface: Surface): JSONObject? {
+        val found = evaluateJson(
+            KtxParserScript.buildNoticePopupScript(surface.width, surface.height),
+        ) ?: return null
+        return if (found.optBoolean("present")) found else null
+    }
+
+    /**
+     * 안내 창의 [확인] 을 진짜 터치로 누르고, **그 창이 닫히는 것까지 확인한다.** (§38-6-2)
+     *
+     * @return 눌렀고 닫혔으면 null, **누르지 않았거나 닫히지 않았으면 그 이유.**
+     *
+     * 누르지 않는 경우가 실패가 아니라는 점이 중요하다. 우리가 아는 안내가 아니면
+     * (차단 안내·예약실패 안내·고르라는 창) 누르지 않는 것이 정답이다. 그런 창의
+     * [확인] 은 조회 폼을 새로 여는 링크라 **사용자가 넣어 둔 조회 조건을 날린다.**
+     * (대원칙 5)
+     *
+     * 닫히는 것을 확인하지 않으면 아직 닫히는 중인 **같은 창을 "또 떴다" 로 읽고 한 번 더
+     * 누른다.** 되돌릴 수 없는 동작을 두 번 하는 셈이다. 확인은 DOM 읽기뿐이라 요청이
+     * 나가지 않는다.
+     */
+    private suspend fun tapNotice(
+        popup: JSONObject,
+        surface: Surface,
+        onClick: (String) -> Unit,
+    ): String? {
+        if (!popup.optBoolean("actionable") || !popup.optBoolean("tappable")) {
+            return describeNotice(popup)
+        }
+        val point = tapPointOf(popup) ?: return describeNotice(popup)
+
+        val tap = tap(point.first, point.second)
+        val confirm = evaluateJson(KtxParserScript.buildTapConfirmScript())
+        onClick(describeNoticeTap(popup, tap, confirm))
+
+        if (!tap.delivered) {
+            return "안내 창 [확인] 터치가 전달되지 않음 (${tap.describe()})"
+        }
+        return awaitNoticeClosed(popup, surface)
+    }
+
+    /**
+     * 누른 창이 닫혔는지 짧게 되풀이해 읽는다. 닫혔으면 null.
+     *
+     * **다른 창으로 바뀐 것도 닫힌 것으로 본다.** 안내가 둘 겹쳐 있던 경우이고,
+     * 새 창을 어떻게 할지는 부르는 쪽([confirmSettleWithNotice])이 정한다.
+     */
+    private suspend fun awaitNoticeClosed(popup: JSONObject, surface: Surface): String? {
+        val before = noticeKey(popup)
+        val startedAt = System.currentTimeMillis()
+
+        while (System.currentTimeMillis() - startedAt < NOTICE_CLOSE_WAIT_MS) {
+            delay(POLL_INTERVAL_MS)
+            val now = readNoticePopup(surface) ?: return null
+            if (noticeKey(now) != before) return null
+        }
+        return "[확인] 을 눌러도 닫히지 않음 (${describeNotice(popup)})"
+    }
+
+    /** 같은 창인지 가리는 값. 제목만으로는 안내가 둘 겹쳤을 때 구분되지 않는다. */
+    private fun noticeKey(popup: JSONObject): String =
+        popup.optString("title") + "|" + popup.optString("text")
+
+    /** 안내 창의 [확인] 을 눌렀다는 기록. 예매 사이에 끼어든 동작이라 따로 남긴다. */
+    private fun describeNoticeTap(
+        popup: JSONObject,
+        tap: TapResult,
+        confirm: JSONObject?,
+    ): String = buildString {
+        append("안내 창 \"").append(popup.optString("title")).append("\"")
+        append(" [").append(popup.optString("label")).append("] 탭")
+        append(" (").append(tap.x.roundToInt()).append(",").append(tap.y.roundToInt())
+        append(") ").append(tap.holdMs).append("ms")
+        appendClickConfirm(confirm)
+        if (!tap.down || !tap.up) append(" / ").append(tap.describe())
+    }
+
+    /** 어떤 창이 떠 있고 왜 누르지 않았는지. 사람이 로그만 보고 알 수 있어야 한다. */
+    private fun describeNotice(popup: JSONObject): String = buildString {
+        append("안내 창 \"").append(popup.optString("title").ifBlank { "(제목 없음)" }).append("\"")
+        val reason = popup.optString("reason")
+        if (reason.isNotBlank()) append(" — ").append(noticeReason(reason))
+        popup.optString("marker").takeIf { it.isNotBlank() }?.let {
+            append(" 문구=").append(it)
+        }
+        popup.optJSONArray("buttons")?.takeIf { it.length() > 0 }?.let { array ->
+            append(" 버튼=")
+            append((0 until array.length()).joinToString("/") { array.optString(it) })
+        }
+        popup.optString("text").takeIf { it.isNotBlank() }?.let {
+            append(" 본문=").append(it)
+        }
+    }
+
+    /** 스크립트가 돌려준 이유를 사람 말로. */
+    private fun noticeReason(reason: String): String = when (reason) {
+        "REFUSED" -> "차단/예약실패 안내라 손대지 않음"
+        "TITLE_MISMATCH" -> "우리가 아는 안내가 아님"
+        "NOT_ALLOWED" -> "[확인] 말고 다른 버튼이 있음"
+        "BUTTON_NOT_FOUND" -> "버튼을 찾지 못함"
+        "BUTTON_AMBIGUOUS" -> "[확인] 버튼이 여러 개"
+        "ZERO_SIZE", "COVERED", "OFF_SCREEN", "NO_VIEWPORT" -> "화면에서 누를 수 없음($reason)"
+        else -> reason
+    }
+
+    /**
+     * 2단계에서 화면을 기다린 결과. (§38-6-2)
+     *
+     * 안내 창에 가로막힌 것은 "화면이 안 바뀜" 과 다른 사건이라 섞지 않는다.
+     */
+    private sealed interface ReserveWait {
+        data class Settled(val outcome: PageOutcome) : ReserveWait
+
+        /** 안내 창이 가로막았는데 누를 수 있는 창이 아니었다. 사람이 이어서 눌러야 한다. */
+        data class Blocked(val detail: String) : ReserveWait
     }
 
     /**
@@ -778,16 +978,23 @@ class KtxWebViewHost(
      * 전환이 없다면 [settleTimeoutMs] 까지 DOM 변경만 살핀다.
      * AJAX 재조회에서 응답 내용이 이전과 같으면 변화가 관찰되지 않으므로,
      * 이 경우 [PageOutcome.Settled] 로 돌려주고 분석은 계속 진행한다.
+     *
+     * @param interruptedBy 폴링마다 불린다. 이유를 돌려주면 기다림을 그 자리에서 끊고
+     *  [PageOutcome.Deferred] 로 올린다. 예매 2단계에서 **안내 창이 가로막았는지**
+     *  살피는 데만 쓴다 (§38-6-2). 되돌리기([dismissReserveResult])는 쓰지 않는다 —
+     *  그 화면의 [확인] 은 조회 조건을 날리는 버튼이라 애초에 건드리면 안 된다.
      */
     private suspend fun awaitSettled(
         timeoutMs: Long,
         settleTimeoutMs: Long,
         baselineSig: String,
+        interruptedBy: (suspend () -> String?)? = null,
     ): PageOutcome {
         // 스크립트 실행에 걸리는 시간도 포함되도록 실제 경과 시간으로 판단한다.
         val startedAt = System.currentTimeMillis()
         while (true) {
             outcomes.tryReceive().getOrNull()?.let { return it }
+            interruptedBy?.invoke()?.let { return PageOutcome.Deferred(it) }
             val waited = System.currentTimeMillis() - startedAt
 
             if (navigationStarted) {
@@ -1143,6 +1350,24 @@ class KtxWebViewHost(
          * 더 물러나면 사용자가 보던 화면에서 너무 멀어진다.
          */
         const val MAX_BACK_STEPS = 2
+
+        /**
+         * 예매 한 번에 [확인] 을 눌러 줄 안내 창의 최대 개수. (§38-6-2)
+         *
+         * 실측된 것은 한 장뿐이고, 안내가 둘 이상 겹치는 경우까지만 감당한다.
+         * 이 값을 넘도록 창이 계속 뜬다면 우리가 모르는 상황이므로 사람에게 넘긴다.
+         * **늘리지 말 것** — 같은 창을 되풀이해 누르는 것은 되돌릴 수 없는 동작을
+         * 되풀이하는 것과 같다. (대원칙 2)
+         */
+        const val MAX_NOTICE_CONFIRMS = 2
+
+        /**
+         * 안내 창의 [확인] 을 누른 뒤 그 창이 닫히기를 기다리는 시간. (§38-6-2)
+         *
+         * react-modal 이 걷히는 데는 한두 프레임이면 된다. 넉넉히 잡아도 손해가 없는
+         * 이유는, 창이 정말 안 닫히는 상황이면 어차피 사람이 손대야 하기 때문이다.
+         */
+        const val NOTICE_CLOSE_WAIT_MS = 3_000L
 
         /**
          * WebView 가 배치되기를 기다리는 상한. (§38-10)

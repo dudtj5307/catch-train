@@ -721,6 +721,72 @@ div.ticket_reserv_wrap > div.ticket_reserv_inner > div.ticket_reserv.clear.oneli
 
 §19-2 의 "잔여석없음" 확인과 같은 역할이다. **화면 전환만으로는 성공을 알 수 없다.**
 
+### §38-6-2. [예매] 와 결제 화면 사이에 안내 창이 하나 끼어든다
+
+**열차에 따라** 2단계 [예매] 를 눌러도 결제 화면으로 가지 않고 안내 창이 먼저 뜬다.
+그 창의 [확인] 을 누르기 전에는 **아무 일도 일어나지 않는다.**
+실측된 것은 KTX-산천 2개 편성을 이어 붙여 운행하는 열차다. (2026-08-31 사용자 실측)
+
+```html
+<div class="ReactModalPortal">
+  <div class="ReactModal__Overlay … modal layerPopup m-full my_modal_layer9999">
+    <div class="ReactModal__Content" role="dialog" aria-modal="true">
+      <div class="layerWrap">
+        <div class="tit_wrap"><h1 class="tit">이용안내</h1></div>          ← 제목
+        <div class="con_Wrap"><div class="type_tckRelay_03">
+          <div class="confirm_message">선택하신 열차는 KTX-산천 2개 편성을 …</div>
+          <div class="btnWrap">
+            <button class="btn_bn-blue btn_pop-close">확인</button>        ← 눌러야 하는 것
+```
+
+성질이 §38-10 의 역/지역 선택 창과 같다. `window.open` 팝업이 아니라 **페이지가
+스스로 그리는 react-modal** 이라 `KtxPopupHost` 가 관여하지 않고, 오버레이 class 에
+`layerPopup` 이 들어 있어 **`100vh` 가 깨진 WebView 에서는 열려도 높이 0 이다.**
+`buildViewportFixScript` 의 보정이 이 창에도 그대로 필요하다.
+
+#### 누르는 규칙 — §38-6-1 과 같다
+
+버튼을 고르는 방식이 2단계와 같아야 한다. **제목과 버튼 문구를 완전일치 허용목록으로만**
+본다. 하나라도 어긋나면 누르지 않고 사람에게 넘긴다 (`ReserveOutcome.NoticeBlocked`).
+
+| 확인 | 통과 조건 |
+|---|---|
+| 창 본문 | `RESERVE_FAILED_MARKERS` · `BLOCKED_MARKERS` 문구가 **없어야** 한다 |
+| 제목 | `NoticePopup.TITLE_TEXTS_EXACT` = `이용안내` 와 완전일치 |
+| 버튼 문구 | `NoticePopup.BUTTON_TEXTS_EXACT` = `확인` 과 완전일치, 그런 버튼이 정확히 하나 |
+| 다른 버튼 | 취소·동의·결제 같은 **고르라는 버튼이 섞여 있으면 통째로 손대지 않는다** |
+
+**넓게 잡으면 안 되는 이유가 분명하다.** 예약 실패 안내(§19-2)와 차단 안내에도 [확인]
+버튼이 있는데, 그 [확인] 은 조회 폼을 새로 여는 링크라 **사용자가 넣어 둔 조회 조건을
+통째로 날린다** (대원칙 5). 못 누르고 멈추는 쪽이 훨씬 싸다 — 좌석은 이미 골라져
+있으므로 사용자가 화면에서 [확인] 만 눌러 주면 그대로 이어진다.
+
+#### 어디서 살피나
+
+`KtxWebViewHost.confirmReserve` 안이다. 두 자리에서 본다.
+
+1. **[예매] 를 누르기 전** — 1단계 도중에 창이 떴다면 하단 바가 그 아래 깔려 있다.
+   먼저 치우지 않으면 [예매] 는 `COVERED` 로 눌리지 않는다.
+2. **누른 뒤 기다리는 동안** — 이 창은 `document.body` 에 붙어서 목록 서명에도
+   MutationObserver 에도 잡히지 않는다. 그냥 기다리면 `confirmSettleMs` 를 통째로
+   버린 뒤 "화면이 안 바뀜" 으로 끝난다. 그래서 정착을 기다리는 폴링마다 창이 떴는지
+   **읽는다**(요청이 아니다). 창이 뜨면 기다림을 끊고 [확인] 을 누른 뒤
+   **예산을 처음부터 다시 잡는다** — 진짜 기다림은 [확인] 다음에 시작된다.
+
+**누른 뒤에는 그 창이 닫히는 것까지 확인한다**(`NOTICE_CLOSE_WAIT_MS` 3초, 읽기만).
+확인하지 않으면 아직 닫히는 중인 **같은 창을 "또 떴다" 로 읽고 한 번 더 누른다** —
+되돌릴 수 없는 동작을 두 번 하는 셈이다. 제목이 아니라 제목+본문으로 같은 창인지 가린다
+(안내가 둘 겹쳤을 때 제목만으로는 구분되지 않는다).
+
+한 번의 예매에서 눌러 주는 안내 창은 `MAX_NOTICE_CONFIRMS`(2)장까지다. 그 이상 계속
+뜬다면 우리가 모르는 상황이므로 사람에게 넘긴다. **늘리지 말 것** (대원칙 2).
+
+알아보지 못한 창이면 기다리지 않고 **곧바로** 넘긴다. 그 화면은 사람이 손대기 전에는
+넘어가지 않으므로 기다릴 값어치가 없고, 빨리 넘길수록 결제 재촉 알림(§19-3)이 빨리 울린다.
+
+> 확장(`extension/`)에는 **아직 넣지 않았다.** selector 는 `KtxSelectors.NoticePopup` 에
+> 한 벌로 있으므로 옮길 때 그것을 본다. → [`shared/README.md`](../shared/README.md)
+
 ### §38-7. 로그인 판정 — 클래스 **이름**을 믿으면 안 된다
 
 두 덤프가 우연히 로그인 / 비로그인 상태였던 덕에 확인됐다.
@@ -788,6 +854,9 @@ div.ticket_reserv_wrap > div.ticket_reserv_inner > div.ticket_reserv.clear.oneli
 - **`dismissReserveResult` 의 뒤로 가기가 SPA 에서 조회 결과 화면으로 돌아가는지** (§38-5)
   → 지금은 물러난 뒤 목록이 실제로 보이는지 확인하고, 안 보이면 성공으로 치지 않는다
 - **예약 실패 안내의 실제 문구.** `KtxSelectors.RESERVE_FAILED_MARKERS` 는 아직 SRT 값이다
+- **`이용안내` 말고 다른 안내 창이 [예매] 를 가로막는지** (§38-6-2).
+  `NoticePopup.TITLE_TEXTS_EXACT` 에는 실측된 제목 하나뿐이다. 넓히려면 그 창을 실제로 보고
+  넓힌다 — 예약 실패·차단 안내까지 누르게 되면 조회 조건이 날아간다 (대원칙 5)
 - **조회 폼의 출발일 입력.** `KtxSelectors.SEARCH_DATE_FIELDS` 를 비워 두었다.
   화면 상단의 "구간 · 날짜" 요약에서 날짜만 빠진 채로 보인다 (표시용이라 감시에는 영향 없음)
 

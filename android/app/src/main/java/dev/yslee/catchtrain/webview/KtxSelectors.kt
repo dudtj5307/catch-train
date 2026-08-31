@@ -263,6 +263,81 @@ object KtxSelectors {
     /** 눌러선 안 되는 비활성 버튼 표시. `disabled` 속성과 함께 붙어 있었다. */
     const val RESERVE_BUTTON_DISABLED_CLASS = "btn-disabled"
 
+    // --- 예매 도중 끼어드는 안내 팝업 (§38-6-2) --------------------------------
+
+    /**
+     * [예매] 를 누르면 열차에 따라 **안내 창이 먼저 뜨고, [확인] 을 누르기 전에는
+     * 다음 화면으로 넘어가지 않는다.** (§38-6-2)
+     *
+     * 실측된 것은 KTX-산천 2개 편성을 이어 붙여 운행하는 열차다.
+     * ```html
+     * <div class="ReactModalPortal"><div class="ReactModal__Overlay … layerPopup m-full">
+     *   <div class="ReactModal__Content" role="dialog" aria-modal="true"><div class="layerWrap">
+     *     <div class="tit_wrap"><h1 class="tit">이용안내</h1></div>
+     *     <div class="con_Wrap"><div class="type_tckRelay_03">
+     *       <div class="confirm_message">…열차번호와 해당호차를 확인하시고 승차하시기…</div>
+     *       <div class="btnWrap"><button class="btn_bn-blue btn_pop-close">확인</button></div>
+     * ```
+     *
+     * 이 창은 `window.open` 팝업이 아니라 페이지가 스스로 그리는 react-modal 이라
+     * [KtxPopupHost] 가 관여하지 않는다. 오버레이 class 에 `layerPopup` 이 들어 있어
+     * **`100vh` 가 깨진 WebView 에서는 열려도 높이 0 이다** (§38-10) — 그래서
+     * `buildViewportFixScript` 의 보정이 이 창에도 그대로 필요하다.
+     *
+     * **누르는 규칙은 2단계 버튼과 같다** (§38-6-1). 제목과 버튼 문구를 **완전일치
+     * 허용목록**으로만 보고, 하나라도 어긋나면 누르지 않고 사람에게 넘긴다.
+     * 넓게 잡으면 [RESERVE_FAILED_MARKERS] 안내나 차단 안내의 [확인] 까지 누르게 되는데,
+     * 그 [확인] 은 조회 폼을 새로 여는 링크라 **사용자가 넣어 둔 조회 조건을 날린다**
+     * (대원칙 5). 못 누르고 멈추는 쪽이 훨씬 싸다.
+     */
+    object NoticePopup {
+
+        /**
+         * 열려 있는 안내 창. [PAGE_MODAL] 과 같은 것을 보지만 목적이 달라 따로 둔다 —
+         * 그쪽은 진단용이고 이쪽은 **누를 대상**을 고르는 데 쓴다.
+         *
+         * react-modal 은 닫히면 이 오버레이를 통째로 걷어내므로, 존재 자체가
+         * "지금 창이 떠 있다" 는 뜻이다. (빈 `div#layerPopup` 은 여기 걸리지 않는다)
+         */
+        val OVERLAY = listOf(
+            "div.ReactModalPortal div.ReactModal__Overlay",
+        )
+
+        /** 창 제목. `<div class="tit_wrap"><h1 class="tit">이용안내</h1></div>` */
+        val TITLE = listOf(
+            "div.tit_wrap h1.tit",
+            "div.tit_wrap .tit",
+            "h1.tit",
+        )
+
+        /**
+         * **[확인] 을 눌러도 되는 창의 제목.** 공백 제거 후 완전일치.
+         *
+         * 지금은 실측된 하나뿐이다. 늘리려면 그 창을 실제로 보고 늘린다 —
+         * 여기 한 줄이 "앱이 눌러도 되는 안내" 의 전부다.
+         */
+        val TITLE_TEXTS_EXACT = listOf("이용안내")
+
+        /** 창 안의 버튼. `<div class="btnWrap"><button class="btn_bn-blue btn_pop-close">` */
+        val BUTTON = listOf(
+            "div.btnWrap button",
+            "button.btn_pop-close",
+        )
+
+        /** **누를 수 있는 버튼 문구.** 완전일치. (§38-6-1 과 같은 규칙) */
+        val BUTTON_TEXTS_EXACT = listOf("확인")
+
+        /**
+         * 창 안에 이 문구의 버튼이 있으면 **아무것도 누르지 않는다.**
+         *
+         * 무언가를 고르라는 창(취소/동의/결제)은 안내가 아니다. 안내 창에는 [확인]
+         * 하나만 있었고, 두 개 이상이 보이면 그것은 우리가 아는 창이 아니다.
+         */
+        val BUTTON_TEXT_EXCLUDE = listOf(
+            "취소", "닫기", "아니오", "동의", "결제", "로그인", "예약대기", "입석",
+        )
+    }
+
     // --- 예약 실패 / 차단 ------------------------------------------------------
 
     /**
