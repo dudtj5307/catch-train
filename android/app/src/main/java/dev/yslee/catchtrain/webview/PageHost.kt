@@ -211,6 +211,20 @@ sealed interface ReserveOutcome {
      */
     data class Mismatch(override val detail: String) : ReserveOutcome
 
+    /**
+     * **안내 창이 가로막았는데 누를 수 있는 창이 아니었다.** (DESIGN.md §38-6-2)
+     *
+     * 열차에 따라 [예매] 와 결제 화면 사이에 안내 창이 하나 끼어든다. 그 창의 [확인]
+     * 을 누르기 전에는 화면이 넘어가지 않는다. 아는 안내(제목·버튼 문구 완전일치)면
+     * 앱이 눌러 주지만, 아니면 **누르지 않는다** — 차단·예약실패 안내의 [확인] 은
+     * 조회 폼을 새로 여는 링크라 사용자가 넣어 둔 조회 조건을 통째로 날린다.
+     * (대원칙 5)
+     *
+     * 실패가 아니라 [NotAllowed] 와 같은 성질의 **일부러 멈춤**이다. 좌석 칸은 골라져
+     * 있고 [예매] 도 눌렀으므로, 사용자가 화면의 [확인] 만 눌러 주면 이어진다.
+     */
+    data class NoticeBlocked(override val detail: String) : ReserveOutcome
+
     /** 하단 예매 바나 그 안의 버튼을 찾지 못했다. */
     data class ButtonNotFound(override val detail: String) : ReserveOutcome
 
@@ -277,6 +291,11 @@ interface PageHost {
      * [selectSeat] 가 [SeatSelectOutcome.Selected] 를 돌려준 다음에만 부른다.
      * 누르기 전에 선택 표시·등급 문구·버튼 문구를 다시 확인하고,
      * 하나라도 어긋나면 누르지 않는다. 허용목록에 없는 버튼도 누르지 않는다.
+     *
+     * 열차에 따라 [예매] 와 결제 화면 사이에 **안내 창이 하나 끼어든다.** (§38-6-2)
+     * 그 창의 [확인] 을 누르기 전에는 화면이 넘어가지 않으므로, 아는 안내라면
+     * 여기서 그 [확인] 까지 눌러 준다. 아는 안내가 아니면 누르지 않고
+     * [ReserveOutcome.NoticeBlocked] 를 돌려준다.
      */
     suspend fun confirmReserve(
         target: ReserveTarget,

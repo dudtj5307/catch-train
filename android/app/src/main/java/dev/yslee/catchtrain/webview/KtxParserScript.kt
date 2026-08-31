@@ -131,6 +131,43 @@ object KtxParserScript {
         .replace(VIEW_PLACEHOLDER, "{w:$viewWidthPx,h:$viewHeightPx}")
 
     /**
+     * **예매 도중 끼어드는 안내 창.** 지금 떠 있는지, [확인] 을 눌러도 되는지. (§38-6-2)
+     *
+     * 열차에 따라 [예매] 를 누르면 결제 화면 대신 안내 창이 먼저 뜨고,
+     * **[확인] 을 누르기 전에는 다음으로 넘어가지 않는다.** (KTX-산천 2개 편성을 이어
+     * 운행하는 열차에서 실측) 이 창은 `window.open` 팝업이 아니라 페이지가 스스로
+     * 그리는 react-modal 이라 [KtxPopupHost] 도, 하단 바 탐색도 알지 못한다.
+     *
+     * 누를 대상을 고르는 규칙은 2단계 버튼과 같다 (§38-6-1).
+     *  1. 제목이 [KtxSelectors.NoticePopup.TITLE_TEXTS_EXACT] 와 **완전일치**하는가
+     *  2. 창 안에 고르라는 버튼(취소/동의/결제…)이 섞여 있지 않은가
+     *  3. 버튼 문구가 [KtxSelectors.NoticePopup.BUTTON_TEXTS_EXACT] 와 **완전일치**하고
+     *     그런 버튼이 정확히 하나인가
+     *
+     * 창 본문에 차단·예약실패 문구가 보이면 그 자리에서 손을 뗀다(`REFUSED`).
+     * 그런 안내의 [확인] 은 조회 폼을 새로 여는 링크라 **사용자가 넣어 둔 조회 조건을
+     * 통째로 날린다** (대원칙 5). 확실하지 않으면 누르지 않고 사람에게 넘긴다.
+     *
+     * 아무것도 클릭하지 않는다. 좌표만 돌려준다.
+     *
+     * 반환 형식:
+     * ```json
+     * {"present": false}
+     * {"present": true, "actionable": true, "tappable": true, "x": 1.0, "y": 2.0,
+     *  "title": "이용안내", "label": "확인", "text": "…"}
+     * {"present": true, "actionable": false,
+     *  "reason": "REFUSED|TITLE_MISMATCH|NOT_ALLOWED|BUTTON_NOT_FOUND|BUTTON_AMBIGUOUS",
+     *  "title": "…", "buttons": ["…"]}
+     * ```
+     */
+    fun buildNoticePopupScript(
+        viewWidthPx: Int,
+        viewHeightPx: Int,
+    ): String = NOTICE_TEMPLATE.withSignature().withTapPoint()
+        .replace(CONFIG_PLACEHOLDER, noticeConfig())
+        .replace(VIEW_PLACEHOLDER, "{w:$viewWidthPx,h:$viewHeightPx}")
+
+    /**
      * 2단계를 누른 **뒤에** 실행한다. 지금 화면이 예약 실패 안내인지 알려준다. (§19-2)
      *
      * 좌석이 열린 것을 보고 눌러도 그사이 다른 사람이 먼저 잡으면 실패 안내가 뜬다.
@@ -284,6 +321,29 @@ object KtxParserScript {
         append("}")
     }
 
+    /**
+     * 안내 창 스크립트가 쓰는 값. (§38-6-2)
+     *
+     * `refuse` 는 [KtxSelectors.RESERVE_FAILED_MARKERS] 와 [KtxSelectors.BLOCKED_MARKERS] 를
+     * 합친 것이다. 그 문구가 보이는 창은 **우리가 아는 안내가 아니므로** 손대지 않는다.
+     */
+    private fun noticeConfig(): String = buildString {
+        append("{")
+        append("overlays:").append(jsArray(KtxSelectors.NoticePopup.OVERLAY)).append(",")
+        append("title:").append(jsArray(KtxSelectors.NoticePopup.TITLE)).append(",")
+        append("titles:").append(jsArray(KtxSelectors.NoticePopup.TITLE_TEXTS_EXACT)).append(",")
+        append("buttons:").append(jsArray(KtxSelectors.NoticePopup.BUTTON)).append(",")
+        append("texts:").append(jsArray(KtxSelectors.NoticePopup.BUTTON_TEXTS_EXACT)).append(",")
+        append("exclude:").append(jsArray(KtxSelectors.NoticePopup.BUTTON_TEXT_EXCLUDE)).append(",")
+        append("refuse:")
+            .append(jsArray(KtxSelectors.RESERVE_FAILED_MARKERS + KtxSelectors.BLOCKED_MARKERS))
+            .append(",")
+        append("disabledClass:")
+            .append(jsString(KtxSelectors.RESERVE_BUTTON_DISABLED_CLASS)).append(",")
+        append("textChars:").append(NOTICE_TEXT_CHARS)
+        append("}")
+    }
+
     /** 1·2단계가 공유하는 대상 정보. 같은 값을 세 스크립트가 똑같이 읽어야 한다. */
     private fun targetConfig(target: ReserveTarget): String = buildString {
         append("{")
@@ -337,6 +397,12 @@ object KtxParserScript {
 
     /** `transform` 같은 값은 matrix 로 길게 나온다. 알아볼 만큼만 남긴다. */
     private const val PROBE_CSS_VALUE_CHARS = 40
+
+    /**
+     * 안내 창 본문을 몇 자까지 로그에 남길지. (§38-6-2)
+     * 어떤 안내였는지 사람이 알아볼 정도면 된다 — 로그 한 줄에 들어가야 한다.
+     */
+    private const val NOTICE_TEXT_CHARS = 60
 
     /** 보정된 뷰포트 높이를 담는 CSS 변수. 이름이 사이트 것과 겹치면 안 된다. */
     private const val VIEWPORT_FIX_VAR = "--catchtrain-vh"
@@ -1002,6 +1068,142 @@ object KtxParserScript {
         departureTime: CFG.departureTime,
         rect: point.rect || ''
       };
+
+      if (point.reason) {
+        out.tappable = false;
+        out.reason = point.reason;
+        out.covered = point.covered || '';
+        out.viewport = point.viewport || '';
+        return out;
+      }
+
+      ktxArmConfirm(target.el);
+      out.tappable = true;
+      out.x = point.x;
+      out.y = point.y;
+      out.at = point.at;
+      return out;
+    })();
+    """.trimIndent()
+
+    /**
+     * 안내 창 탐색 스크립트. (§38-6-2)
+     *
+     * 확인을 모두 통과했을 때만 [확인] 버튼의 좌표를 돌려준다. 아무것도 클릭하지 않는다.
+     * **떠 있는 창을 알아보지 못했을 때도 `present: true` 를 돌려준다** — 앱이 가로막힌
+     * 이유를 사람이 알아야 하고, 그때는 기다려 봐야 화면이 넘어가지 않기 때문이다.
+     */
+    private val NOTICE_TEMPLATE = """
+    (function () {
+      var CFG = /*__CONFIG__*/;
+      var VIEW = /*__VIEW__*/;
+      /*__SIGNATURE__*/
+      /*__TAPPOINT__*/
+
+      var modals = [];
+      for (var s = 0; s < CFG.overlays.length; s++) {
+        var list;
+        try { list = document.querySelectorAll(CFG.overlays[s]); } catch (e) { continue; }
+        for (var i = 0; i < list.length; i++) {
+          if (modals.indexOf(list[i]) < 0) modals.push(list[i]);
+        }
+      }
+      if (modals.length === 0) return { present: false };
+
+      // 여러 장이면 마지막에 열린 것이 위에 있다. 가로막고 있는 것은 그 한 장이다.
+      var modal = modals[modals.length - 1];
+      var title = ktxFirstText(modal, CFG.title);
+      var body = ktxText(modal);
+      var out = {
+        present: true,
+        count: modals.length,
+        title: title,
+        text: body.slice(0, CFG.textChars)
+      };
+
+      // 차단·예약실패 안내의 [확인] 은 조회 폼을 새로 연다. 절대 누르지 않는다. (대원칙 5)
+      for (var m = 0; m < CFG.refuse.length; m++) {
+        if (body.indexOf(ktxNorm(CFG.refuse[m])) >= 0) {
+          out.actionable = false;
+          out.reason = 'REFUSED';
+          out.marker = CFG.refuse[m];
+          return out;
+        }
+      }
+
+      var okTitle = false;
+      for (var t = 0; t < CFG.titles.length; t++) {
+        if (title === ktxNorm(CFG.titles[t])) { okTitle = true; break; }
+      }
+      if (!okTitle) {
+        out.actionable = false;
+        out.reason = 'TITLE_MISMATCH';
+        return out;
+      }
+
+      var buttons = [];
+      for (var b = 0; b < CFG.buttons.length; b++) {
+        var found;
+        try { found = modal.querySelectorAll(CFG.buttons[b]); } catch (e) { continue; }
+        for (var j = 0; j < found.length; j++) {
+          if (buttons.indexOf(found[j]) < 0) buttons.push(found[j]);
+        }
+      }
+
+      function disabled(el) {
+        if (el.disabled) return true;
+        if (el.getAttribute && el.getAttribute('disabled') !== null) return true;
+        return ktxHas(ktxTokens(el), CFG.disabledClass);
+      }
+
+      var labels = [];
+      var candidates = [];
+      var barred = '';
+      for (var n = 0; n < buttons.length; n++) {
+        var el = buttons[n];
+        var label = ktxLabelOf(el);
+        if (labels.length < 4) labels.push(label || '(문구없음)');
+        for (var x = 0; x < CFG.exclude.length && barred === ''; x++) {
+          if (label.indexOf(ktxNorm(CFG.exclude[x])) >= 0) barred = label;
+        }
+        if (disabled(el)) continue;
+        for (var y = 0; y < CFG.texts.length; y++) {
+          if (label === ktxNorm(CFG.texts[y])) {
+            candidates.push({ el: el, label: label });
+            break;
+          }
+        }
+      }
+      out.buttons = labels;
+
+      // 고르라는 창(취소/동의/결제…)은 안내가 아니다. 하나라도 섞여 있으면 손대지 않는다.
+      if (barred !== '') {
+        out.actionable = false;
+        out.reason = 'NOT_ALLOWED';
+        out.barred = barred;
+        return out;
+      }
+      if (buttons.length === 0) {
+        out.actionable = false;
+        out.reason = 'BUTTON_NOT_FOUND';
+        return out;
+      }
+      if (candidates.length === 0) {
+        out.actionable = false;
+        out.reason = 'NOT_ALLOWED';
+        return out;
+      }
+      if (candidates.length > 1) {
+        out.actionable = false;
+        out.reason = 'BUTTON_AMBIGUOUS';
+        return out;
+      }
+
+      var target = candidates[0];
+      var point = ktxTapPoint(target.el);
+      out.actionable = true;
+      out.label = target.label;
+      out.rect = point.rect || '';
 
       if (point.reason) {
         out.tappable = false;
