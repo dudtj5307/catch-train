@@ -49,6 +49,22 @@ export class ChromeNotifier {
     });
   }
 
+  /**
+   * 자동 예매의 결말. ([예매] 누름 / 좌석만 골라 둠 / 클릭이 안 먹음)
+   *
+   * **발견 알림과 같은 id 를 쓴다.** 좌석이 열렸다는 알림은 이 알림으로 대체되어야
+   * 한다 — 사용자가 봐야 하는 화면은 하나뿐인데 알림이 둘 쌓이면 오히려 헷갈린다.
+   */
+  notifyReserve(title, body) {
+    this.#create(MATCH_ID, {
+      title,
+      message: body,
+      // 지금 이 순간 화면을 봐야 하는 알림이다. 직접 닫을 때까지 남긴다.
+      requireInteraction: true,
+      priority: 2,
+    });
+  }
+
   /** 감시가 스스로 멈췄다. (차단 / 로그인 풀림 / 탭 닫힘 / 조회 조건 바뀜) */
   notifyWatchStopped(title, body) {
     this.#create(STOPPED_ID, {

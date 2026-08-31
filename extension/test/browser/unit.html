@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>unit</title>
+    <!--
+      `node:test` / `node:assert/strict` 를 대역으로 갈아 끼운다. 테스트 파일은
+      **한 글자도 고치지 않는다** — 두 벌이 되면 반드시 한쪽만 고치게 된다.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "node:test": "/test/browser/shim/node-test.js",
+          "node:assert/strict": "/test/browser/shim/node-assert.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <pre id="out">RUNNING</pre>
+    <script type="module">
+      const FILES = [
+        '/test/seat-status.test.mjs',
+        '/test/train-key.test.mjs',
+        '/test/selectors-mirror.test.mjs',
+        '/test/page-snapshot.test.mjs',
+        '/test/selection-engine.test.mjs',
+        '/test/scheduler.test.mjs',
+        '/test/watch-controller.test.mjs',
+      ];
+
+      const lines = [];
+      for (const file of FILES) {
+        try {
+          await import(file);
+        } catch (e) {
+          lines.push('LOAD-FAIL ' + file + ' :: ' + (e && (e.stack || e.message) || e));
+        }
+      }
+
+      const { runAll } = await import('/test/browser/shim/node-test.js');
+      const results = await runAll();
+      for (const r of results) {
+        lines.push((r.ok ? 'pass  ' : 'FAIL  ') + r.name + (r.ok ? '' : '\n        ' + r.error));
+      }
+
+      const failed = results.filter((r) => !r.ok).length;
+      const broken = lines.filter((l) => l.startsWith('LOAD-FAIL')).length;
+      lines.push('');
+      lines.push(`${results.length - failed} / ${results.length} 통과` +
+        (broken ? ` · 불러오지 못한 파일 ${broken}` : ''));
+
+      document.getElementById('out').textContent = lines.join('\n');
+      document.title = failed || broken ? `FAILED-${failed + broken}` : 'ALL-PASS';
+    </script>
+  </body>
+</html>

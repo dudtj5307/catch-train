@@ -9,29 +9,55 @@
 //  - 선택한 좌석이 열리면 알리고 감시를 멈춘다. (§34-4)
 //
 // 한 사이클 (PLAN.md §E-5):
-//   새로고침 → 화면 확정까지 판독 → 로그인·조회조건 확인 → 판정 → 알림 → 대기
+//   새로고침 → 화면 확정까지 판독 → 로그인·조회조건 확인 → 판정 → 알림 → 예매 → 대기
 //
-// **M2 는 알림까지다.** 좌석을 발견하면 알리고 멈춘다. 누르는 것(1·2단계)은
-// 클릭 드라이버를 실측으로 정한 뒤(M2.5) M3·M4 에서 이 자리에 붙는다.
-// 추측으로 기본값을 정하지 않기 위해 일부러 비워 둔 자리다. (PLAN.md §E-2-4)
+// ## 누르는 것 (M3)
+//
+// 좌석을 발견하면 **좌석 칸(1단계) → 하단 바 [예매](2단계)** 까지 누르고 멈춘다.
+// 결제는 사람이 한다 (대원칙 3). 자동 클릭을 켜 두어도 다음 셋은 지켜진다.
+//
+//  - **누른 뒤에는 반드시 확인한다.** 확장의 클릭은 `isTrusted=false` 라 사이트가
+//    무시할 수 있다 (PLAN.md §E-2-1). `active` 가 붙지 않았으면 2단계로 가지 않는다.
+//  - **실패한 자리에서 다시 누르지 않는다.** 다른 방법으로 한 번 더 누르는 것은
+//    대원칙 2 가 금지하는 재시도다. 폴백의 방향은 **인계** 하나뿐이다. (§E-2-3)
+//  - **[예매] 는 완전일치 허용목록으로만.** `예약대기신청` 은 사용자가 고른 것이
+//    아니다. 허용목록에 없으면 좌석만 골라 둔 채 멈춘다. (§38-6-1)
 
 import { DomParseError, PageStatus, isSettled } from '../domain/page-snapshot.js';
 import { describeMatch, matchKeyOf } from '../domain/match.js';
 import { match as matchSelection } from '../domain/selection-engine.js';
+import { seatClassLabel } from '../domain/seat-class.js';
+import { trainSummary } from '../domain/train.js';
 import {
   selectionIsEmpty,
   selectionSize,
   selectionTrainCount,
 } from '../domain/watch-selection.js';
 import { LogCode } from './logger.js';
-import { AbortError, ReloadScheduler, formatRange, sleep } from './scheduler.js';
+import { AbortError, ReloadScheduler, formatRange, formatRate, sleep } from './scheduler.js';
 import { DEFAULT_WATCH_CONFIG } from './watch-config.js';
 import {
   INITIAL_STATUS,
+  ReserveResult,
+  ReserveStage,
   WatchError,
   WatchState,
+  reserveResultLabel,
   watchErrorGuide,
 } from './watch-state.js';
+
+/**
+ * 한 사이클에서 예매를 시도한 뒤 감시 루프가 무엇을 할지.
+ *
+ *  - `NONE`     : 누르지 않았다. 예전(M2)처럼 발견 처리로 흘러간다
+ *  - `CONTINUE` : 눌렀거나 건너뛰었고, **감시는 이어간다** (잔여석없음 등)
+ *  - `STOPPED`  : 루프가 여기서 끝났다. 부르는 쪽은 곧바로 return 한다
+ */
+const ReserveStep = Object.freeze({
+  NONE: 'NONE',
+  CONTINUE: 'CONTINUE',
+  STOPPED: 'STOPPED',
+});
 
 /** 화면을 기다리는 동안 진행 로그를 남기는 주기(판독 횟수). 500ms 간격이니 약 5초에 한 줄. */
 const WAIT_TICK_READS = 10;
@@ -53,6 +79,7 @@ export class WatchController {
   #sleep;
   #onStatus;
   #onSelectionInvalid;
+  #onReserving;
 
   #status = { ...INITIAL_STATUS };
   #host = null;
@@ -63,6 +90,15 @@ export class WatchController {
 
   /** 이미 알린 (열차, 좌석등급) 조합. 문자열 키다. (§20) */
   #notifiedKeys = new Set();
+
+  /**
+   * **이미 눌러 본 칸.** 같은 칸을 두 번 잡으려 들지 않는다.
+   * 예외는 "잔여석없음" 하나뿐이고, 그때는 여기서 빼서 다음 사이클에 다시 눌러 본다.
+   */
+  #reserveAttempts = new Set();
+
+  /** 칸마다 "잔여석없음" 을 몇 번 겪었나. [maxSoldOutRetries] 를 넘으면 더 안 누른다. */
+  #soldOutCounts = new Map();
 
   /**
    * **이번 감시에서 조회 결과 화면에 한 번이라도 닿아 봤는가.** (§39)
@@ -84,6 +120,7 @@ export class WatchController {
     sleepFn = sleep,
     onStatus = () => {},
     onSelectionInvalid = () => {},
+    onReserving = async () => {},
   }) {
     this.#notifier = notifier;
     this.#logger = logger;
@@ -92,6 +129,7 @@ export class WatchController {
     this.#sleep = sleepFn;
     this.#onStatus = onStatus;
     this.#onSelectionInvalid = onSelectionInvalid;
+    this.#onReserving = onReserving;
   }
 
   get status() {
@@ -104,6 +142,17 @@ export class WatchController {
 
   get tabId() {
     return this.#host ? this.#host.tabId : null;
+  }
+
+  /**
+   * 지금 루프가 쓰고 있는 파라미터. **읽기 전용으로만 쓴다.**
+   *
+   * 팝업이 "저장된 간격" 과 "실제로 돌고 있는 간격" 을 구분해 보여주려고 있다.
+   * 여기 값을 바꿔서 루프에 밀어 넣지 말 것 — 이번 사이클의 대기 시간은 이미 뽑혀
+   * 있고, 중간에 갈아 끼우면 요청이 한 번 더 나가는 재시작이 된다 (대원칙 2).
+   */
+  get config() {
+    return { ...this.#config };
   }
 
   /** 루프가 끝날 때까지. **테스트용이다** — 실제 동작은 아무도 기다리지 않는다. */
@@ -125,6 +174,8 @@ export class WatchController {
     this.#selection = selection;
     this.#config = config;
     this.#notifiedKeys.clear();
+    this.#reserveAttempts.clear();
+    this.#soldOutCounts.clear();
     this.#hasSeenList = false;
     this.#querySig = null;
     this.#status = { ...INITIAL_STATUS, state: WatchState.LOADING, tabId: host.tabId };
@@ -133,9 +184,10 @@ export class WatchController {
     this.#logger.log(
       LogCode.WATCH_START,
       `선택 ${selectionSize(selection)}칸 (열차 ${selectionTrainCount(selection)}편성) ` +
-        `간격=${formatRange(config.minIntervalMs, config.maxIntervalMs)} 랜덤` +
-        // M2 에는 클릭이 없다. 켜 두었더라도 그렇게 보이면 안 된다.
-        (config.autoReserveEnabled ? ' 자동예약=아직 없음(M3)' : ''),
+        // **간격이 아니라 분당 요청 수가 차단을 부른다.** 간격만 적어 두면
+        // "0.3초니까 괜찮겠지" 로 읽힌다 — 사이클의 대부분은 새로고침 자체다. (대원칙 2)
+        `간격=${formatRange(config.minIntervalMs, config.maxIntervalMs)} 랜덤 ` +
+        `(${formatRate(config.minIntervalMs, config.maxIntervalMs)})`,
     );
 
     this.#abort = new AbortController();
@@ -174,6 +226,9 @@ export class WatchController {
       })),
     );
     for (const key of [...this.#notifiedKeys]) if (!kept.has(key)) this.#notifiedKeys.delete(key);
+    // 더 이상 보지 않기로 한 칸의 시도 이력도 같이 지운다. 다시 체크하면 새로 눌러 본다.
+    for (const key of [...this.#reserveAttempts]) if (!kept.has(key)) this.#reserveAttempts.delete(key);
+    for (const key of [...this.#soldOutCounts.keys()]) if (!kept.has(key)) this.#soldOutCounts.delete(key);
   }
 
   #cancelLoop() {
@@ -364,10 +419,19 @@ export class WatchController {
       const open = new Set(result.matches.map(matchKeyOf));
       for (const key of [...this.#notifiedKeys]) if (!open.has(key)) this.#notifiedKeys.delete(key);
 
-      // 4-1) 자동 예매(1·2단계)가 붙을 자리다. M3·M4 — 지금은 아무것도 누르지 않는다.
+      // 4-1) 자동 예매 (M3). **감시에서 페이지를 누르는 유일한 자리다.**
+      if (result.matched) this.#logger.log(LogCode.MATCH_DETAIL, describeMatch(result.matches[0]));
+
+      const step = await this.#tryReserve(result.matches, config);
+      this.#throwIfAborted();
+      if (step === ReserveStep.STOPPED) return;
+      if (step === ReserveStep.CONTINUE) {
+        // 눌렀지만 감시를 이어간다 (잔여석없음 등). 발견으로 치지 않는다. (§19-2)
+        await this.#waitForNextCycle(config);
+        continue;
+      }
 
       if (result.matched && config.stopOnMatch) {
-        this.#logger.log(LogCode.MATCH_DETAIL, describeMatch(result.matches[0]));
         this.#logger.log(LogCode.WATCH_STOP, '좌석 발견');
         this.#finish({
           state: WatchState.MATCHED,
@@ -378,6 +442,282 @@ export class WatchController {
 
       // 5) 다음 사이클까지 대기 ------------------------------------------
       await this.#waitForNextCycle(config);
+    }
+  }
+
+  // ---------------------------------------------------------------- 자동 예매 (M3)
+
+  /**
+   * ★ **좌석 칸(1단계) → 하단 바 [예매](2단계).** 감시가 페이지를 누르는 유일한 자리다.
+   *
+   * **끄는 스위치는 없다.** 좌석이 열리면 누르는 것이 이 도구가 하는 일이다
+   * (`watch-config.js` 머리말). 대신 누르지 않는 경우가 아래처럼 좁게 정해져 있다.
+   *
+   * 누르지 않는 경우:
+   *  - 이미 그 칸에 시도했다. **같은 칸을 두 번 잡으려 들지 않는다**
+   *  - "잔여석없음" 을 [maxSoldOutRetries] 회 겪었다
+   *  - 화면에서 그 편성이나 칸을 확실히 특정하지 못했다 (그새 매진 포함)
+   *  - 2단계 버튼이 [예매] 가 아니다 (`예약대기신청` / `입석+좌석 예매`)
+   *
+   * **실패해도 그 자리에서 다시 누르지 않는다.** 알림은 이미 나갔으므로 사용자가 직접
+   * 예매하면 되고, 잘못 누르는 것보다 안 누르는 편이 안전하다. (대원칙 2, 3)
+   * 예외는 "잔여석없음" 하나뿐 — 그때는 목록으로 되돌리고 다음 사이클에 다시 본다.
+   */
+  async #tryReserve(matches, config) {
+    if (matches.length === 0) return ReserveStep.NONE;
+
+    const candidate = matches.find((m) => {
+      const key = matchKeyOf(m);
+      return !this.#reserveAttempts.has(key) &&
+        (this.#soldOutCounts.get(key) ?? 0) < config.maxSoldOutRetries;
+    });
+    if (!candidate) {
+      this.#logger.log(LogCode.RESERVE_SKIPPED, '이미 눌러 본 칸뿐입니다');
+      return ReserveStep.CONTINUE;
+    }
+
+    this.#reserveAttempts.add(matchKeyOf(candidate));
+    const label = seatClassLabel(candidate.seatClass);
+    this.#logger.log(LogCode.RESERVE_START, describeMatch(candidate));
+
+    // --- 1단계 : 좌석 칸 고르기 (되돌릴 수 있다) --------------------------
+    this.#update({ state: WatchState.MATCHED, message: `${label} 좌석을 고르는 중…` });
+
+    const selected = await this.#host.selectSeat({
+      trainNumber: candidate.train.trainNumber,
+      departureTime: candidate.train.departureTime,
+      seatClass: candidate.seatClass,
+      settleMs: config.reserveSettleMs,
+    });
+    this.#throwIfAborted();
+    if (selected.clicked) {
+      this.#logger.log(
+        LogCode.RESERVE_CLICKED,
+        `1단계 ${selected.anchor || ''} ${eventText(selected.event)}`.trim(),
+      );
+    }
+    if (selected.result !== 'SELECTED') {
+      return this.#reserveFailed(candidate, ReserveStage.SELECT, selected.result, selected.detail);
+    }
+    this.#logger.log(LogCode.RESERVE_SEAT_SELECTED, selected.detail);
+
+    // --- 2단계 : 하단 바의 [예매] (되돌릴 수 없다) ------------------------
+    this.#update({ message: '[예매] 를 누르는 중…' });
+
+    // ★ **누르기 직전에 표시를 남긴다.** service worker 는 언제든 죽을 수 있고,
+    // 부활한 뒤 "눌렀는지 아닌지 모르는 채로 또 누르는 것" 이 가장 나쁜 결과다.
+    // 이 표시가 남아 있으면 부활은 감시를 이어가지 않고 인계로 확정한다. (§E-3-2 3번)
+    await this.#onReserving({
+      trainNumber: candidate.train.trainNumber,
+      departureTime: candidate.train.departureTime,
+      seatClass: candidate.seatClass,
+      at: this.#clock(),
+    });
+
+    try {
+      const confirmed = await this.#host.confirmReserve({ seatClass: candidate.seatClass });
+      this.#throwIfAborted();
+      if (confirmed.clicked) {
+        this.#logger.log(
+          LogCode.RESERVE_CLICKED,
+          `2단계 [${confirmed.button}] ${eventText(confirmed.event)}`,
+        );
+      }
+      if (confirmed.result !== 'CLICKED') {
+        // 여기까지 왔다는 것은 **좌석은 골라져 있다**는 뜻이다. 사람이 이어서 누르면 된다.
+        return this.#handOver(candidate, confirmed.result, confirmed.detail);
+      }
+
+      // --- 관찰 : 눌렀는데 화면이 어떻게 되었나 ---------------------------
+      //
+      // 여기만 예산이 넉넉하다. **대기열은 [예매] 를 누른 직후에 가장 잘 붙는다** (§39-6).
+      // 관찰은 DOM 읽기라 요청이 나가지 않는다.
+      this.#update({ message: '예매 결과를 확인하는 중…' });
+
+      const observed = await this.#host.watchReserveOutcome({
+        baseline: confirmed.baseline,
+        budgetMs: config.confirmSettleMs,
+        pollMs: config.confirmPollMs,
+        signal: this.#signal,
+      });
+      this.#throwIfAborted();
+
+      // **실측 자리다.** 코레일의 실제 안내 문구를 우리는 아직 모른다 (§38-8).
+      // 판정과 무관하게 보이는 대로 남긴다 — 이 줄이 다음 selector 수정의 근거다.
+      if (observed.page && observed.page.notice) {
+        this.#logger.log(LogCode.RESERVE_NOTICE, observed.page.notice);
+      }
+
+      switch (observed.kind) {
+        case 'CLICKED':
+          return this.#reserved(candidate, observed.detail);
+
+        case 'SOLD_OUT':
+          return this.#soldOut(candidate, config, observed.detail);
+
+        case 'BLOCKED':
+          // 차단된 화면에서는 되돌리기도 하지 않는다. 그 자리에서 멈춘다. (대원칙 2)
+          this.#logger.log(LogCode.BLOCKED_DETECTED, observed.detail);
+          this.#notifyStopped('접속이 차단되어 감시를 멈췄습니다', watchErrorGuide(WatchError.BLOCKED));
+          this.#fail(WatchError.BLOCKED, watchErrorGuide(WatchError.BLOCKED));
+          return ReserveStep.STOPPED;
+
+        case 'NOTICE':
+          // 모르는 안내가 떴다. 성공인지 실패인지 **추측하지 않는다.** 사람에게 넘긴다.
+          return this.#handOver(candidate, ReserveResult.UNKNOWN_NOTICE, observed.detail);
+
+        default:
+          return this.#handOver(candidate, ReserveResult.NO_CHANGE, observed.detail);
+      }
+    } finally {
+      // 어떻게 빠져나가든 표시를 지운다. 남겨 두면 다음 부활이 헛되이 인계로 끝난다.
+      await this.#onReserving(null);
+    }
+  }
+
+  /** 2단계까지 눌렀고 화면이 넘어갔다. **여기서부터는 사용자의 몫이다.** (대원칙 3) */
+  #reserved(match, detail) {
+    this.#logger.log(LogCode.RESERVE_SUCCEEDED, detail);
+    this.#logger.log(LogCode.WATCH_STOP, '예매 누름');
+    this.#notifyReserve(
+      '[예매] 를 눌렀습니다',
+      `${trainSummary(match.train)}\n${seatClassLabel(match.seatClass)} — ` +
+        '좌석 선택과 결제를 지금 진행하세요.',
+    );
+    this.#finish({
+      state: WatchState.RESERVED,
+      reserve: {
+        match,
+        stage: ReserveStage.CONFIRM,
+        result: ReserveResult.CLICKED,
+        detail,
+      },
+      message: `${trainSummary(match.train)} ${seatClassLabel(match.seatClass)} ` +
+        '[예매] 를 눌렀습니다. 좌석 선택과 결제는 직접 진행하세요.',
+    });
+    return ReserveStep.STOPPED;
+  }
+
+  /**
+   * **1단계는 되었는데 2단계를 누르지 않은(또는 확신할 수 없는) 경우.** (§38-6-1)
+   *
+   * 오류가 아니다. 좌석 칸은 화면에서 골라져 있고 하단 바도 떠 있으므로 사용자가
+   * [예매] 만 누르면 된다. 그래서 **감시를 여기서 끝낸다** — 다음 사이클의 새로고침이
+   * 골라 둔 선택을 지우기 때문이다.
+   */
+  #handOver(match, result, detail) {
+    this.#logger.log(LogCode.RESERVE_HANDOVER, `${result} ${detail}`.trim());
+    this.#logger.log(LogCode.WATCH_STOP, '좌석만 골라 두고 인계');
+    this.#notifyReserve(
+      '좌석을 골라 뒀습니다 — [예매] 를 눌러 주세요',
+      `${trainSummary(match.train)}\n${seatClassLabel(match.seatClass)} — ` +
+        `${reserveResultLabel(result)}`,
+    );
+    this.#finish({
+      state: WatchState.SEAT_SELECTED,
+      reserve: { match, stage: ReserveStage.CONFIRM, result, detail },
+      message: `${trainSummary(match.train)} ${seatClassLabel(match.seatClass)} 좌석을 골라 뒀습니다. ` +
+        `화면 아래 [예매] 를 직접 눌러 주세요. (${reserveResultLabel(result)})`,
+    });
+    return ReserveStep.STOPPED;
+  }
+
+  /**
+   * **1단계에서 끝난 경우.** 두 갈래이고 처리가 다르다.
+   *
+   *  - 편성/칸을 못 찾았다 → 화면이 그새 바뀐 것이다. **아무것도 누르지 않았다.**
+   *    감시를 이어간다. 다음 사이클에 다시 열려 보이면 그때 누른다.
+   *  - 눌렀는데 안 골라졌다 → **합성 클릭이 이 사이트에 통하지 않는다**는 뜻이다
+   *    (PLAN.md §E-2-1). 계속 돌면 사이클마다 헛클릭이 나가므로 멈추고 사람을 부른다.
+   */
+  #reserveFailed(match, stage, result, detail) {
+    this.#logger.log(LogCode.RESERVE_FAILED, `${stage}/${result} ${detail}`);
+
+    if (result === ReserveResult.ROW_NOT_FOUND || result === ReserveResult.CELL_NOT_FOUND) {
+      // **아무것도 누르지 않았으니 시도 이력에서 뺀다.** 다음 사이클에 다시 보이면
+      // 그때 누른다. 대원칙 2 가 세는 것은 나간 요청이지 이런 헛걸음이 아니다.
+      this.#reserveAttempts.delete(matchKeyOf(match));
+      this.#update({
+        reserve: { match, stage, result, detail },
+        message: `${detail} — 감시를 계속합니다.`,
+      });
+      return ReserveStep.CONTINUE;
+    }
+
+    const guide = '좌석은 열렸는데 확장이 누른 클릭을 사이트가 받지 않았습니다. ' +
+      '코레일 화면에서 직접 예매하세요.';
+    this.#logger.log(LogCode.WATCH_STOP, '클릭이 통하지 않음');
+    this.#notifyReserve('좌석이 열렸습니다 — 직접 예매하세요', `${trainSummary(match.train)}\n${guide}`);
+    this.#finish({
+      state: WatchState.MATCHED,
+      reserve: { match, stage, result, detail },
+      message: `${describeMatch(match)} — ${guide} (${reserveResultLabel(result)})`,
+    });
+    return ReserveStep.STOPPED;
+  }
+
+  /**
+   * **"잔여석없음".** 눌렀을 때는 열려 있었지만 그사이 남이 먼저 잡은 것이다. (§19-2)
+   *
+   * 오류가 아니므로 감시를 멈추지 않는다. 다만 그 화면에서는 다음 사이클을 진행할 수
+   * 없으므로 **목록 화면까지 되돌린 뒤** 이어간다.
+   *
+   * 되돌리기는 **뒤로 가기만** 쓴다. 안내 화면의 [확인] 을 누르면 조회 폼이 새로 열려
+   * 사용자가 넣어 둔 조회 조건이 초기화된다. 되돌리기 한 번이 감시 전체를 망친다.
+   * (대원칙 5) 되돌리지 못하면 그 화면에서 더 누르지 않고 멈춘다.
+   */
+  async #soldOut(match, config, detail) {
+    const key = matchKeyOf(match);
+    const attempts = (this.#soldOutCounts.get(key) ?? 0) + 1;
+    this.#soldOutCounts.set(key, attempts);
+    this.#logger.log(LogCode.RESERVE_SOLD_OUT, `${describeMatch(match)} (${attempts}) ${detail}`);
+
+    const retryable = attempts < config.maxSoldOutRetries;
+    if (retryable) {
+      this.#reserveAttempts.delete(key);
+    } else {
+      this.#logger.log(
+        LogCode.RESERVE_SKIPPED,
+        `${describeMatch(match)} 잔여석없음 ${attempts}회 - 더 누르지 않음`,
+      );
+    }
+
+    this.#update({
+      state: WatchState.WAITING,
+      error: null,
+      reserve: { match, stage: ReserveStage.CONFIRM, result: ReserveResult.SOLD_OUT, detail },
+      message: `${trainSummary(match.train)} ${seatClassLabel(match.seatClass)} — ` +
+        '누르는 사이에 좌석이 나갔습니다. ' +
+        (retryable ? '목록으로 돌아가 계속 감시합니다.' : '이 칸은 더 누르지 않습니다.'),
+    });
+
+    const back = await this.#host.goBack({
+      settleTimeoutMs: config.researchSettleMs,
+      pollMs: config.researchPollMs,
+      signal: this.#signal,
+    });
+    this.#throwIfAborted();
+
+    if (back.kind === 'UPDATED') {
+      this.#logger.log(LogCode.RESERVE_DISMISSED, back.detail);
+      return ReserveStep.CONTINUE;
+    }
+
+    this.#logger.log(LogCode.RESERVE_DISMISS_FAILED, back.detail);
+    this.#notifyStopped(
+      '예매 화면에서 목록으로 돌아가지 못했습니다',
+      '코레일 화면을 확인한 뒤 다시 조회하고 감시를 시작하세요.',
+    );
+    this.#fail(WatchError.REFRESH_FAILED, watchErrorGuide(WatchError.REFRESH_FAILED));
+    return ReserveStep.STOPPED;
+  }
+
+  /** 예매 결과 알림. 발견 알림 자리를 덮는다 — 사용자가 봐야 하는 화면은 하나뿐이다. */
+  #notifyReserve(title, body) {
+    try {
+      this.#notifier.notifyReserve(title, body);
+    } catch (e) {
+      this.#logger.log(LogCode.NOTIFICATION_SKIPPED, `알림 실패: ${(e && e.message) || e}`);
     }
   }
 
@@ -595,4 +935,10 @@ export class WatchController {
   #fail(error, message) {
     this.#finish({ state: WatchState.ERROR, error, message });
   }
+}
+
+/** 클릭 훅이 본 것 한 줄. `trusted=false` 는 **정상이다** — 확장의 클릭은 원래 그렇다. */
+function eventText(event) {
+  if (!event) return '';
+  return `fired=${event.fired} trusted=${event.trusted} onTarget=${event.onTarget}`;
 }

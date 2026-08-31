@@ -9,8 +9,10 @@
 import * as KSEL from './selectors.js';
 import {
   seatStatusFromClassNames,
+  seatClassFromClassNames,
   isSelectedCellClassNames,
 } from '../../domain/seat-status.js';
+import { SeatClass } from '../../domain/seat-class.js';
 
 export function norm(s) {
   return (s || '').replace(/\s+/g, '');
@@ -80,6 +82,50 @@ export function seatCells(row) {
   return [];
 }
 
+/**
+ * 한 편성에서 **등급 → 좌석 칸 위치**. `{ general, firstClass }`, 없으면 -1.
+ *
+ * 등급은 class 가 1순위이고, 매진 칸에는 등급 class 가 붙지 않으므로 남은 자리를
+ * 위치로 채운다 — `[0]`=일반실 `[1]`=특실. **SRT 와 반대다.** (§38-3)
+ *
+ * **판독(`parse.js`)과 1단계 클릭(`reserve.js`)이 같은 함수를 쓴다.** 두 벌로 두면
+ * "분석할 때 본 칸" 과 "누르는 칸" 이 갈라지고, 그 순간 엉뚱한 칸을 누른다.
+ */
+export function seatCellIndexes(cells) {
+  let general = -1;
+  let firstClass = -1;
+  cells.forEach((cell, i) => {
+    const seatClass = seatClassFromClassNames(classOf(cell));
+    if (general < 0 && seatClass === SeatClass.GENERAL) general = i;
+    else if (firstClass < 0 && seatClass === SeatClass.FIRST_CLASS) firstClass = i;
+  });
+  if (general < 0 && KSEL.SEAT_CELL_INDEX_GENERAL < cells.length &&
+    KSEL.SEAT_CELL_INDEX_GENERAL !== firstClass) {
+    general = KSEL.SEAT_CELL_INDEX_GENERAL;
+  }
+  if (firstClass < 0 && KSEL.SEAT_CELL_INDEX_FIRST_CLASS < cells.length &&
+    KSEL.SEAT_CELL_INDEX_FIRST_CLASS !== general) {
+    firstClass = KSEL.SEAT_CELL_INDEX_FIRST_CLASS;
+  }
+  return { general, firstClass };
+}
+
+/**
+ * 목록 전체에서 1단계로 골라진 칸 수.
+ *
+ * 하나여야 한다. **여러 칸이면 무엇을 고른 건지 확신할 수 없어 2단계로 가지 않는다.**
+ * (§E-6-3 B: `SEAT_NOT_SELECTED`)
+ */
+export function activeCellCount() {
+  let n = 0;
+  for (const row of rows()) {
+    for (const cell of seatCells(row)) {
+      if (isSelectedCell(cell)) n++;
+    }
+  }
+  return n;
+}
+
 export function classOf(el) {
   if (!el) return '';
   const cls = el.className;
@@ -104,6 +150,51 @@ export function seatStatusOfCell(cell) {
 /** 1단계로 이 칸을 골라 둔 상태인가. 상태가 아니라 선택 표시다. (§38-6) */
 export function isSelectedCell(cell) {
   return isSelectedCellClassNames(classOf(cell));
+}
+
+// --- 예매 2단계 바 (§38-6) ------------------------------------------------
+//
+// **읽기만 한다.** 누르는 것은 `reserve.js` 이고, 그쪽도 여기서 찾은 것을 누른다 —
+// 진단(`probe.js`)이 "이 버튼이 있다" 고 말한 것과 감시가 누르는 것이 같아야 한다.
+
+/** 1단계로 좌석 칸을 고르면 화면 최하단에 나타나는 바. 없으면 null. */
+export function reserveBar() {
+  return first(document, KSEL.RESERVE_BAR);
+}
+
+/** 바에 표시되는 **1단계에서 고른 등급** 문구. (§38-6-1) */
+export function reserveBarLabel(bar) {
+  return bar ? firstText(bar, KSEL.RESERVE_BAR_SEAT_LABEL) : '';
+}
+
+/**
+ * 바 안의 버튼들. `{ el, label, disabled }`.
+ *
+ * 표현용 class 는 상태마다 바뀌므로 `reservbtn` 만 쓴다. **문구로 고르는 것은
+ * 부르는 쪽의 몫이다** — 여기서는 무엇이 놓여 있는지만 알려준다.
+ */
+export function reserveBarButtons(bar) {
+  if (!bar) return [];
+  for (const selector of KSEL.RESERVE_BUTTON) {
+    let found;
+    try {
+      found = bar.querySelectorAll(selector);
+    } catch {
+      continue;
+    }
+    if (!found || found.length === 0) continue;
+    const out = [];
+    for (const el of found) {
+      out.push({
+        el,
+        label: text(el),
+        disabled: el.disabled === true ||
+          tokens(el).includes(KSEL.RESERVE_BUTTON_DISABLED_CLASS),
+      });
+    }
+    if (out.length > 0) return out;
+  }
+  return [];
 }
 
 export function hash(value) {

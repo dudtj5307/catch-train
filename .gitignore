@@ -27,3 +27,6 @@ node_modules/
 # 확장 패키징 키·산출물 (서명 키는 절대 커밋 금지)
 *.crx
 *.pem
+
+# Visual Studio 작업 상태 (extension/.vs 등)
+.vs/

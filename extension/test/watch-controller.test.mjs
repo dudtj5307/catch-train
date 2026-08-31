@@ -19,7 +19,7 @@ import { selectionOf } from '../src/domain/watch-selection.js';
 import { LogCode, WatchLogger } from '../src/background/logger.js';
 import { WatchController } from '../src/background/watch-controller.js';
 import { DEFAULT_WATCH_CONFIG } from '../src/background/watch-config.js';
-import { WatchError, WatchState } from '../src/background/watch-state.js';
+import { ReserveResult, ReserveStage, WatchError, WatchState } from '../src/background/watch-state.js';
 
 // ---------------------------------------------------------------- 바탕
 
@@ -110,11 +110,42 @@ class FakeHost {
   async querySig() {
     return { ok: true, sig: this.sig };
   }
+
+  // --- 예매 계열. **기본은 "다 잘 된다"** -------------------------------
+  //
+  // 좌석이 열리면 누르는 것은 설정이 아니라 이 도구가 하는 일이다 (`watch-config.js`).
+  // 끄는 스위치가 없으므로 **가짜 host 도 누를 줄 알아야 한다** — 예전에는 대부분의
+  // 테스트가 자동 예매를 꺼서 이 자리를 비워 두었다. 다르게 굴러야 하는 테스트는
+  // [withReserve] 로 갈아 끼운다.
+
+  selectCalls = [];
+  confirmCalls = [];
+  backCalls = 0;
+
+  async selectSeat(arg) {
+    this.selectCalls.push(arg);
+    return { result: 'SELECTED', detail: '일반실 선택됨', clicked: true };
+  }
+
+  async confirmReserve(arg) {
+    this.confirmCalls.push(arg);
+    return { result: 'CLICKED', detail: '[예매] 눌렀습니다', clicked: true, button: '예매', baseline: {} };
+  }
+
+  async watchReserveOutcome() {
+    return { kind: 'CLICKED', detail: '화면 전환', page: null };
+  }
+
+  async goBack() {
+    this.backCalls++;
+    return { kind: 'UPDATED', detail: '목록 1편성' };
+  }
 }
 
 class RecordingNotifier {
   sent = [];
   stopped = [];
+  reserved = [];
 
   notifyMatch(match, extraCount) {
     this.sent.push({ match, extraCount });
@@ -122,6 +153,11 @@ class RecordingNotifier {
 
   notifyWatchStopped(title, body) {
     this.stopped.push([title, body]);
+  }
+
+  /** 예매의 결말 알림. ([예매] 누름 / 인계 / 클릭이 안 먹음) */
+  notifyReserve(title, body) {
+    this.reserved.push([title, body]);
   }
 
   cancelAll() {}
@@ -164,6 +200,7 @@ function setup(host, config = {}) {
   const logger = new WatchLogger({ clock: time.now });
   const scheduler = fakeScheduler(time);
   let selectionCleared = 0;
+  const reserveMarks = [];
   const controller = new WatchController({
     notifier,
     logger,
@@ -171,6 +208,8 @@ function setup(host, config = {}) {
     clock: time.now,
     sleepFn: time.sleep,
     onSelectionInvalid: () => { selectionCleared++; },
+    // **[예매] 를 누르기 직전/직후의 표시.** 실제로는 storage 에 쓴다 (§E-3-2 3번).
+    onReserving: (mark) => { reserveMarks.push(mark); },
   });
   const run = (selection = SELECTION) => {
     controller.start({
@@ -183,6 +222,7 @@ function setup(host, config = {}) {
   return {
     controller, notifier, logger, scheduler, time, run,
     cleared: () => selectionCleared,
+    reserveMarks,
   };
 }
 
@@ -195,7 +235,8 @@ test('선택한 좌석이 열리면 알림을 보내고 감시를 멈춘다', as
 
   assert.equal(t.notifier.sent.length, 1);
   assert.equal(t.notifier.sent[0].match.seatClass, SeatClass.GENERAL);
-  assert.equal(t.controller.status.state, WatchState.MATCHED);
+  // 알림이 먼저 나가고, 이어서 누른다. 끄는 스위치가 없으므로 여기서 멈추지 않는다.
+  assert.equal(t.controller.status.state, WatchState.RESERVED);
   assert.equal(t.controller.isWatching, false);
 });
 
@@ -242,13 +283,18 @@ test('갱신은 새로고침이고, 나간 사실이 로그에 남는다', async
 });
 
 test('같은 좌석은 다시 알리지 않고, 매진되었다 다시 열리면 새로 알린다', async () => {
-  const host = new FakeHost(raw('AVAILABLE'), {
+  // 알림 중복 방지(§20)는 **여러 사이클을 도는 동안**의 규칙이라, 예매가 성공해
+  // 첫 사이클에서 끝나 버리면 볼 수가 없다. 그래서 1단계가 편성을 못 찾는 host 를
+  // 쓴다 — 아무것도 누르지 않았으므로 감시가 그대로 이어지는 경로다.
+  const host = withReserve(new FakeHost(raw('AVAILABLE'), {
     onCycle: (h) => {
       // 열림 → 열림(같은 칸) → 매진 → 열림
       if (h.requeryCount === 2) h.fallback = raw('SOLD_OUT');
       if (h.requeryCount === 3) h.fallback = raw('AVAILABLE');
       if (h.requeryCount >= 4) t.controller.stop('테스트 종료');
     },
+  }), {
+    select: { result: 'ROW_NOT_FOUND', detail: '편성을 찾지 못했습니다', clicked: false },
   });
   const t = setup(host, { stopOnMatch: false });
   await t.run();
@@ -284,7 +330,7 @@ test('화면이 확정되기 전에는 새로고침하지 않고 제자리에서
   // **기다리는 동안 요청이 한 번도 나가지 않아야 한다.** 나가면 대기 순번이 날아간다.
   assert.equal(t.logger.count(LogCode.RESEARCH_TRIGGERED), 0);
   assert.equal(host.parseCount, 4);
-  assert.equal(t.controller.status.state, WatchState.MATCHED);
+  assert.equal(t.controller.status.state, WatchState.RESERVED);
 });
 
 test('★ content script 가 없는 동안은 기다린다 — 오류로 세지 않는다', async () => {
@@ -296,7 +342,7 @@ test('★ content script 가 없는 동안은 기다린다 — 오류로 세지 
   assert.ok(t.logger.has(LogCode.CONTENT_ABSENT));
   // 새로고침 직후마다 정상적으로 겪는 상태다. 오류로 세면 감시가 3사이클에 죽는다.
   assert.equal(t.logger.count(LogCode.DOM_PARSE_ERROR), 0);
-  assert.equal(t.controller.status.state, WatchState.MATCHED);
+  assert.equal(t.controller.status.state, WatchState.RESERVED);
 });
 
 test('목록을 본 적이 없으면 짧게 끊고 안내한다', async () => {
@@ -321,7 +367,7 @@ test('목록을 본 뒤에는 짧은 예산을 넘겨도 계속 기다린다', a
 
   assert.equal(t.logger.count(LogCode.PAGE_WAIT_TIMEOUT), 0, '10초 예산으로 끊겼다');
   assert.ok(t.time.now() > 10_000, '10초를 넘겨서 기다린 적이 없다');
-  assert.equal(t.controller.status.state, WatchState.MATCHED);
+  assert.equal(t.controller.status.state, WatchState.RESERVED);
 });
 
 test('차단 화면은 기다리지 않고 즉시 멈춘다', async () => {
@@ -491,23 +537,191 @@ test('알림이 꺼져 있으면 알리지 않지만 발견은 그대로다', as
   await t.run();
 
   assert.equal(t.notifier.sent.length, 0);
-  assert.equal(t.controller.status.state, WatchState.MATCHED);
+  assert.equal(t.controller.status.matches[0].train.trainNumber, '305');
+  assert.equal(t.controller.status.matches[0].train.generalSeat, SeatStatus.AVAILABLE);
   assert.ok(t.logger.has(LogCode.NOTIFICATION_SKIPPED));
 });
 
-test('M2 는 아무것도 누르지 않는다 — 발견해도 host 에 클릭 요청이 없다', async () => {
-  const host = new FakeHost(raw('AVAILABLE'));
-  // 클릭 계열 메서드가 하나라도 불리면 실패한다. 실측 전에 만들지 않기로 한 자리다.
-  for (const name of ['selectSeat', 'confirmReserve', 'dismissReserveResult']) {
-    host[name] = () => assert.fail(`${name} 을 불렀다 — M2 에는 클릭이 없다`);
-  }
+// ---------------------------------------------------------------- 자동 예매 (M3)
+//
+// **누르는 경로다.** 여기서 지키는 것은 하나로 요약된다 —
+// *누른 뒤에 확인하고, 확인이 어긋나면 다른 방법으로 또 누르지 않고 사람에게 넘긴다.*
+// (PLAN.md §E-2-3, 대원칙 2·3)
+
+/** [FakeHost] 의 예매 계열 메서드를 갈아 끼운다. 넘기지 않은 것은 "잘 된다" 그대로다. */
+function withReserve(host, {
+  select = { result: 'SELECTED', detail: '일반실 선택됨', clicked: true },
+  confirm = { result: 'CLICKED', detail: '[예매] 눌렀습니다', clicked: true, button: '예매', baseline: {} },
+  observe = { kind: 'CLICKED', detail: '화면 전환', page: null },
+  back = { kind: 'UPDATED', detail: '목록 1편성' },
+} = {}) {
+  host.selectCalls = [];
+  host.confirmCalls = [];
+  host.backCalls = 0;
+  host.selectSeat = async (arg) => {
+    host.selectCalls.push(arg);
+    return typeof select === 'function' ? select(host) : select;
+  };
+  host.confirmReserve = async (arg) => {
+    host.confirmCalls.push(arg);
+    return typeof confirm === 'function' ? confirm(host) : confirm;
+  };
+  host.watchReserveOutcome = async () => (typeof observe === 'function' ? observe(host) : observe);
+  host.goBack = async () => {
+    host.backCalls++;
+    return typeof back === 'function' ? back(host) : back;
+  };
+  return host;
+}
+
+test('★ 좌석이 열리면 1단계 → 2단계까지 누르고 RESERVED 로 끝난다', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE')));
   const t = setup(host);
   await t.run();
 
+  assert.equal(host.selectCalls.length, 1);
+  assert.equal(host.selectCalls[0].trainNumber, '305');
+  assert.equal(host.selectCalls[0].seatClass, SeatClass.GENERAL);
+  assert.equal(host.confirmCalls.length, 1);
+
+  assert.equal(t.controller.status.state, WatchState.RESERVED);
+  assert.equal(t.controller.status.reserve.result, ReserveResult.CLICKED);
+  assert.equal(t.controller.isWatching, false);
+  assert.ok(t.logger.has(LogCode.RESERVE_START));
+  assert.ok(t.logger.has(LogCode.RESERVE_SEAT_SELECTED));
+  assert.ok(t.logger.has(LogCode.RESERVE_SUCCEEDED));
+  assert.equal(t.notifier.reserved.length, 1);
+});
+
+test('★ 1단계가 먹지 않으면 2단계로 가지 않고 멈춘다 — 합성 클릭이 통하지 않는 사이트', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE')), {
+    select: { result: 'SEAT_NOT_SELECTED', detail: '선택 표시가 붙지 않았습니다', clicked: true },
+  });
+  const t = setup(host);
+  await t.run();
+
+  // **여기가 핵심이다.** 눌렀는데 안 먹었으면 2단계는 절대 부르지 않는다.
+  assert.equal(host.confirmCalls.length, 0);
   assert.equal(t.controller.status.state, WatchState.MATCHED);
-  assert.equal(t.controller.status.matches[0].train.trainNumber, '305');
-  assert.equal(
-    t.controller.status.matches[0].train.generalSeat,
-    SeatStatus.AVAILABLE,
-  );
+  assert.equal(t.controller.status.reserve.result, ReserveResult.SEAT_NOT_SELECTED);
+  assert.equal(t.controller.status.reserve.stage, ReserveStage.SELECT);
+  assert.ok(t.logger.has(LogCode.RESERVE_FAILED));
+  assert.equal(t.controller.isWatching, false);
+});
+
+test('★ 편성을 다시 못 찾으면 누르지 않고 감시를 이어간다 — 화면이 그새 바뀐 것이다', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE'), {
+    onCycle: (h) => { if (h.requeryCount >= 3) t.controller.stop('테스트 종료'); },
+  }), {
+    select: { result: 'ROW_NOT_FOUND', detail: '편성을 찾지 못했습니다', clicked: false },
+  });
+  const t = setup(host);
+  await t.run();
+
+  // 스스로 멈추지 않았고, 2단계로는 한 번도 가지 않았다.
+  assert.equal(host.requeryCount, 3);
+  assert.equal(host.confirmCalls.length, 0);
+  // **아무것도 안 눌렀으니 다음 사이클에 다시 시도한다.** 한 번 헛걸음했다고 포기하지 않는다.
+  assert.ok(host.selectCalls.length >= 3, `다시 시도하지 않았다 (${host.selectCalls.length}회)`);
+  assert.ok(t.logger.has(LogCode.RESERVE_FAILED));
+});
+
+test('★ 2단계 버튼이 [예매] 가 아니면 좌석만 골라 두고 인계한다', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE')), {
+    confirm: {
+      result: 'NOT_ALLOWED',
+      detail: '누를 수 있는 [예매] 버튼이 없습니다 (있는 것: 예약대기신청)',
+      clicked: false,
+    },
+  });
+  const t = setup(host);
+  await t.run();
+
+  assert.equal(t.controller.status.state, WatchState.SEAT_SELECTED);
+  assert.equal(t.controller.status.reserve.result, ReserveResult.NOT_ALLOWED);
+  assert.ok(t.logger.has(LogCode.RESERVE_HANDOVER));
+  assert.equal(t.notifier.reserved.length, 1);
+});
+
+test('★ 모르는 안내가 뜨면 성공으로 치지 않고 인계한다', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE')), {
+    observe: { kind: 'NOTICE', detail: '알 수 없는 안내', page: { notice: '처음 보는 문구입니다' } },
+  });
+  const t = setup(host);
+  await t.run();
+
+  assert.equal(t.controller.status.state, WatchState.SEAT_SELECTED);
+  assert.equal(t.controller.status.reserve.result, ReserveResult.UNKNOWN_NOTICE);
+  // 실제 문구를 남겨야 `RESERVE_FAILED_MARKERS` 를 코레일 값으로 고칠 수 있다. (§38-8)
+  assert.ok(t.logger.has(LogCode.RESERVE_NOTICE));
+});
+
+test('★ 잔여석없음이면 뒤로 가서 감시를 이어간다 — 발견으로 치지 않는다', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE'), {
+    onCycle: (h) => { if (h.requeryCount >= 3) t.controller.stop('테스트 종료'); },
+  }), {
+    observe: { kind: 'SOLD_OUT', detail: '잔여석없음', page: { notice: '잔여석이 없습니다' } },
+  });
+  const t = setup(host, { maxSoldOutRetries: 10 });
+  await t.run();
+
+  // 되돌린 뒤 다음 사이클에 **다시 눌러 본다.** 취소표에서는 흔한 일이다. (§19-2)
+  assert.ok(host.backCalls >= 2, '되돌리지 않았다');
+  assert.ok(host.confirmCalls.length >= 2, '다시 눌러 보지 않았다');
+  assert.ok(t.logger.count(LogCode.RESERVE_SOLD_OUT) >= 2);
+  assert.ok(t.logger.has(LogCode.RESERVE_DISMISSED));
+  assert.ok(t.logger.has(LogCode.RESERVE_NOTICE));
+  // 발견으로 치고 멈춰 버리면 취소표 감시가 성립하지 않는다.
+  assert.equal(t.controller.status.state, WatchState.STOPPED);
+});
+
+test('★ 잔여석없음이 상한을 넘으면 그 칸은 더 누르지 않는다', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE'), {
+    onCycle: (h) => { if (h.requeryCount >= 6) t.controller.stop('테스트 종료'); },
+  }), {
+    observe: { kind: 'SOLD_OUT', detail: '잔여석없음', page: null },
+  });
+  const t = setup(host, { maxSoldOutRetries: 2 });
+  await t.run();
+
+  // 계속 실패하는 칸이면 요청만 늘어난다. 상한을 넘겨서는 안 된다. (대원칙 2)
+  assert.equal(host.confirmCalls.length, 2, `상한을 넘겨 눌렀다 (${host.confirmCalls.length}회)`);
+  assert.ok(t.logger.has(LogCode.RESERVE_SKIPPED));
+  // 그래도 감시는 이어간다 — 다른 칸이 열릴 수 있다.
+  assert.equal(host.requeryCount, 6);
+});
+
+test('★ 되돌아가지 못하면 그 화면에서 더 누르지 않고 멈춘다', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE')), {
+    observe: { kind: 'SOLD_OUT', detail: '잔여석없음', page: null },
+    back: { kind: 'SETTLED', detail: '뒤로 갔지만 목록 화면이 아닙니다' },
+  });
+  const t = setup(host);
+  await t.run();
+
+  assert.equal(t.controller.status.state, WatchState.ERROR);
+  assert.ok(t.logger.has(LogCode.RESERVE_DISMISS_FAILED));
+  assert.equal(t.controller.isWatching, false);
+});
+
+test('★ [예매] 를 누르기 직전에 표시를 남기고, 끝나면 지운다', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE')));
+  const t = setup(host);
+  await t.run();
+
+  // 표시가 남은 채로 service worker 가 죽으면 부활이 **또 누르지 않는다.** (§E-3-2 3번)
+  assert.equal(t.reserveMarks.length, 2);
+  assert.equal(t.reserveMarks[0].trainNumber, '305');
+  assert.equal(t.reserveMarks[0].seatClass, SeatClass.GENERAL);
+  assert.equal(t.reserveMarks[1], null);
+});
+
+test('★ 1단계 전에는 표시를 남기지 않는다 — 좌석 고르기는 되돌릴 수 있다', async () => {
+  const host = withReserve(new FakeHost(raw('AVAILABLE')), {
+    select: { result: 'SEAT_NOT_SELECTED', detail: '안 붙음', clicked: true },
+  });
+  const t = setup(host);
+  await t.run();
+
+  assert.equal(t.reserveMarks.length, 0);
 });

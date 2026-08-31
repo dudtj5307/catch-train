@@ -2,11 +2,9 @@
 //
 // **팝업은 이 파일의 값만 보고 화면을 그린다.** (§21) selector 도 chrome API 도 모른다.
 //
-// 안드로이드에 있는데 여기 없는 것들:
+// 안드로이드에 있는데 여기 없는 것:
 //  - `PAUSED` : Activity lifecycle 이 없다. 팝업을 닫는 것은 일시정지가 아니고,
 //    탭이 배경으로 가는 것도 아니다. 감시는 탭이 살아 있는 동안 계속 돈다.
-//  - `RESERVED` / `SEAT_SELECTED` : 아직 아무것도 누르지 않는다. M3·M4 에서 붙는다.
-//    (PLAN.md §E-9 — 클릭 드라이버는 실측 전에 만들지 않는다)
 
 export const WatchState = Object.freeze({
   IDLE: 'IDLE',
@@ -14,6 +12,20 @@ export const WatchState = Object.freeze({
   ANALYZING: 'ANALYZING',
   WAITING: 'WAITING',
   MATCHED: 'MATCHED',
+
+  /** 좌석 칸을 고르고 [예매] 까지 눌렀다. **결제는 사용자가 한다.** (§38-6) */
+  RESERVED: 'RESERVED',
+
+  /**
+   * **1단계까지만 눌렀다.** 좌석 칸은 골라 뒀고 [예매] 는 사람이 눌러야 한다. (§38-6-1)
+   *
+   * 실패가 아니라 **일부러 멈춘 것**이다. 2단계 버튼이 허용목록에 없거나, 누르기 전
+   * 확인이 어긋났거나, 누른 결과를 확신할 수 없을 때 여기로 온다. (대원칙 3)
+   *
+   * 감시는 여기서 끝난다 — 다음 사이클의 새로고침이 골라 둔 선택을 지우기 때문이다.
+   */
+  SEAT_SELECTED: 'SEAT_SELECTED',
+
   ERROR: 'ERROR',
   STOPPED: 'STOPPED',
 });
@@ -30,6 +42,8 @@ export function watchStateLabel(state) {
     case WatchState.ANALYZING: return '페이지 분석 중';
     case WatchState.WAITING: return '다음 확인 대기';
     case WatchState.MATCHED: return '좌석 발견';
+    case WatchState.RESERVED: return '예매 누름';
+    case WatchState.SEAT_SELECTED: return '좌석 골라 둠';
     case WatchState.ERROR: return '오류';
     case WatchState.STOPPED: return '중지됨';
     default: return '대기';
@@ -41,6 +55,8 @@ export function watchStateIndicator(state) {
   if (watchStateIsRunning(state)) return '🟢';
   switch (state) {
     case WatchState.MATCHED: return '🎯';
+    case WatchState.RESERVED: return '🎫';
+    case WatchState.SEAT_SELECTED: return '🎟';
     case WatchState.ERROR: return '🔴';
     default: return '⚪';
   }
@@ -114,6 +130,64 @@ export function watchErrorGuide(error) {
   }
 }
 
+/**
+ * 자동 예매가 **어느 단계**에서 끝났는지. (§38-6)
+ *
+ * 두 단계는 성질이 다르다. 1단계는 아직 아무것도 잡지 않은 되돌릴 수 있는 동작이고,
+ * 2단계는 좌석을 잡는다. 그래서 실패를 볼 때 **어느 단계에서 멈췄는지**를 함께 본다 —
+ * `CONFIRM` 단계의 실패는 "1단계까지는 되어 있다" 는 뜻이기도 하다.
+ */
+export const ReserveStage = Object.freeze({
+  SELECT: 'SELECT',
+  CONFIRM: 'CONFIRM',
+});
+
+export function reserveStageLabel(stage) {
+  return stage === ReserveStage.SELECT ? '좌석 선택' : '예매';
+}
+
+/**
+ * 자동 예매 클릭의 결과. (android: `ReserveResult`, 이름을 같게 둔다)
+ *
+ * 성공([CLICKED])이란 **"[예매] 를 눌렀고 화면이 반응했다"** 는 뜻일 뿐이고,
+ * 예약이 확정되었다는 뜻이 아니다. 좌석 선택과 결제는 사용자가 직접 한다. (대원칙 3)
+ */
+export const ReserveResult = Object.freeze({
+  CLICKED: 'CLICKED',
+  NO_CHANGE: 'NO_CHANGE',
+  SOLD_OUT: 'SOLD_OUT',
+  ROW_NOT_FOUND: 'ROW_NOT_FOUND',
+  CELL_NOT_FOUND: 'CELL_NOT_FOUND',
+  SEAT_NOT_SELECTED: 'SEAT_NOT_SELECTED',
+  NOT_ALLOWED: 'NOT_ALLOWED',
+  MISMATCH: 'MISMATCH',
+  BUTTON_NOT_FOUND: 'BUTTON_NOT_FOUND',
+
+  /** 눌렀는데 **모르는 안내가 떴다.** 성공인지 실패인지 확신할 수 없다 (§38-8) */
+  UNKNOWN_NOTICE: 'UNKNOWN_NOTICE',
+
+  FAILED: 'FAILED',
+  SKIPPED: 'SKIPPED',
+});
+
+export function reserveResultLabel(result) {
+  switch (result) {
+    case ReserveResult.CLICKED: return '[예매] 누름';
+    case ReserveResult.NO_CHANGE: return '눌렀지만 화면이 그대로';
+    case ReserveResult.SOLD_OUT: return '잔여석 없음';
+    case ReserveResult.ROW_NOT_FOUND: return '편성을 다시 찾지 못함';
+    case ReserveResult.CELL_NOT_FOUND: return '좌석 칸을 특정 못 함';
+    case ReserveResult.SEAT_NOT_SELECTED: return '좌석이 골라지지 않음';
+    case ReserveResult.NOT_ALLOWED: return '누를 수 있는 [예매] 가 아님';
+    case ReserveResult.MISMATCH: return '고른 등급과 하단 바가 다름';
+    case ReserveResult.BUTTON_NOT_FOUND: return '예매 바를 찾지 못함';
+    case ReserveResult.UNKNOWN_NOTICE: return '모르는 안내가 떴음';
+    case ReserveResult.FAILED: return '페이지 오류';
+    case ReserveResult.SKIPPED: return '누르지 않음';
+    default: return '';
+  }
+}
+
 /** 팝업이 받는 상태 스냅샷의 초기값. **평범한 객체다** — 메시지로 그대로 건너간다. */
 export const INITIAL_STATUS = Object.freeze({
   state: WatchState.IDLE,
@@ -127,4 +201,7 @@ export const INITIAL_STATUS = Object.freeze({
   searchDate: '',
   error: null,
   message: null,
+
+  /** 마지막 자동 예매 시도. `{ match, stage, result, detail }` 또는 null. */
+  reserve: null,
 });

@@ -21,7 +21,67 @@
         <button id="watch-toggle" class="primary">감시 시작</button>
       </div>
       <p id="watch-message" class="watch-message" hidden></p>
-      <button id="login" class="link" hidden>로그인 화면 열기</button>
+      <!--
+        비로그인일 때 [감시 시작] 대신 눌러야 할 것. 작은 링크로 두었더니 눈에 띄지
+        않아 사용자가 잠긴 [감시 시작] 만 되풀이해 눌렀다. 새 탭으로 연다 (§E-6-5).
+      -->
+      <button id="login" class="login-cta" hidden>코레일 로그인 화면 열기 (새 탭)</button>
+
+      <!--
+        예매를 누를지 말지는 **스위치가 아니다.** 좌석이 열리면 그 칸을 고르고 [예매]
+        까지 누르는 것이 이 확장이 하는 일이다.
+      -->
+
+      <!--
+        감시 간격. **보여 주는 주인공은 "분당 약 N회" 다.**
+        간격만 보이면 "0.3초니까 괜찮겠지" 로 읽히는데, 한 사이클의 대부분은 새로고침
+        자체(약 1초)라 대기를 늘려도 요청 수가 그만큼 줄지 않는다. 차단을 부르는 것은
+        간격이 아니라 분당 요청 수다 (대원칙 2, SRT IP 차단은 실제로 있었다).
+      -->
+      <!--
+        접힌 줄은 **읽는 줄**이고, 펼친 안쪽이 **고치는 자리**다. 그래서 접힌 줄에
+        "미설정" 이나 "—" 가 뜨지 않는다 — 간격에는 언제나 값이 있고(기본 0.3~0.5초),
+        설정 전이라고 빈칸을 보여 주면 감시가 얼마나 두들기는지 모르는 채로 시작된다.
+      -->
+      <details id="interval-box" class="interval">
+        <summary>
+          <!-- 꺾쇠. 접히면 아래(∨), 펼치면 위(∧) 를 가리킨다 — 회전은 CSS 가 한다. -->
+          <span class="chev" aria-hidden="true"></span>
+          <span class="interval-label">감시 간격</span>
+          <span id="interval-range" class="interval-value">0.3~0.5초</span>
+          <span id="interval-rate" class="rate"></span>
+        </summary>
+        <!--
+          **프리셋이 슬라이더보다 위다.** 사용자가 실제로 고르는 것은 "얼마나 세게
+          두들길까" 하나이고, 슬라이더는 그 뒤의 미세 조정이다. 버튼마다 분당 요청
+          수를 같이 적는다 — 고르기 전에 대가가 보여야 한다 (대원칙 2).
+        -->
+        <div class="presets">
+          <button type="button" class="preset" data-min="300" data-max="500">
+            <span class="preset-range">0.3~0.5초</span>
+            <span class="preset-rate"></span>
+          </button>
+          <button type="button" class="preset" data-min="500" data-max="1500">
+            <span class="preset-range">0.5~1.5초</span>
+            <span class="preset-rate"></span>
+          </button>
+          <button type="button" class="preset" data-min="1000" data-max="3000">
+            <span class="preset-range">1~3초</span>
+            <span class="preset-rate"></span>
+          </button>
+        </div>
+        <label class="slider">
+          <span>최소</span>
+          <input id="interval-min" type="range" min="0" max="3000" step="100" value="300" />
+          <output id="interval-min-out">0.3초</output>
+        </label>
+        <label class="slider">
+          <span>최대</span>
+          <input id="interval-max" type="range" min="0" max="3000" step="100" value="500" />
+          <output id="interval-max-out">0.5초</output>
+        </label>
+        <p id="interval-note" class="hint"></p>
+      </details>
     </section>
 
     <p id="notice" class="notice" hidden></p>
@@ -40,18 +100,17 @@
 
     <footer>
       <p id="warnings" class="warnings" hidden></p>
-      <p class="hint">
-        체크한 칸이 열리면 알립니다. 매진인 칸도 체크할 수 있습니다 —
-        지금 매진인 좌석이 풀리기를 기다리는 것이 이 도구의 목적입니다.
-      </p>
-      <p class="hint stage">
-        지금은 <b>알림까지만</b> 동작합니다. 좌석 칸과 [예매] 를 눌러 주는 것은 아직 없습니다.
-      </p>
       <div class="log-head">
         <button id="log-toggle" class="link">로그 보기</button>
         <button id="log-clear" class="link" hidden>로그 지우기</button>
+        <!--
+          M-a 실측. 로그를 펼쳤을 때만 보인다 — 안드로이드의 [역 진단] 과 같은 자리다.
+          **이 버튼만 페이지를 실제로 누른다.** 그래서 두 번 눌러야 돈다. (PLAN.md §E-2-4)
+        -->
+        <button id="probe" class="link probe" hidden>클릭 진단</button>
       </div>
       <pre id="log" class="log" hidden></pre>
+      <pre id="probe-result" class="log probe-result" hidden></pre>
     </footer>
 
     <script type="module" src="popup.js"></script>

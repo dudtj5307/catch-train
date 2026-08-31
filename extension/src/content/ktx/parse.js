@@ -8,8 +8,6 @@
 // WebView 에서 받던 JSON 과 같다 — 판정은 `domain/page-snapshot.js` 가 한다.
 
 import * as KSEL from './selectors.js';
-import { seatClassFromClassNames } from '../../domain/seat-status.js';
-import { SeatClass } from '../../domain/seat-class.js';
 import * as dom from './dom.js';
 
 export function parse() {
@@ -73,23 +71,9 @@ function parseRow(row, index, warnings) {
 
   const cells = dom.seatCells(row);
 
-  // 등급은 class 가 1순위다. 매진 칸에는 등급 class 가 붙지 않으므로
-  // 남은 자리는 위치로 채운다. (§38-3)
-  let gi = -1;
-  let fi = -1;
-  cells.forEach((cell, i) => {
-    const seatClass = seatClassFromClassNames(dom.classOf(cell));
-    if (gi < 0 && seatClass === SeatClass.GENERAL) gi = i;
-    else if (fi < 0 && seatClass === SeatClass.FIRST_CLASS) fi = i;
-  });
-  if (gi < 0 && KSEL.SEAT_CELL_INDEX_GENERAL < cells.length &&
-    KSEL.SEAT_CELL_INDEX_GENERAL !== fi) {
-    gi = KSEL.SEAT_CELL_INDEX_GENERAL;
-  }
-  if (fi < 0 && KSEL.SEAT_CELL_INDEX_FIRST_CLASS < cells.length &&
-    KSEL.SEAT_CELL_INDEX_FIRST_CLASS !== gi) {
-    fi = KSEL.SEAT_CELL_INDEX_FIRST_CLASS;
-  }
+  // 등급 → 칸 위치. **1단계 클릭도 같은 함수를 쓴다** (`dom.seatCellIndexes`).
+  // 두 벌로 두면 "분석할 때 본 칸" 과 "누르는 칸" 이 갈라진다. (§38-3)
+  const { general: gi, firstClass: fi } = dom.seatCellIndexes(cells);
 
   const general = gi >= 0 ? cells[gi] : null;
   const first = fi >= 0 ? cells[fi] : null;
@@ -112,6 +96,21 @@ function parseRow(row, index, warnings) {
     // 1·2단계에서 "이 편성이 그때 그 편성인지" 확인하는 데 쓴다.
     rowKey: dom.rowKey(row),
     rowIndex: index,
+  };
+}
+
+/**
+ * 편성 하나의 **식별자**(`{ trainNumber, departureTime }`).
+ *
+ * 목록이 갱신된 뒤에도 "그때 그 편성" 을 다시 찾는 데 쓴다 (`reserve.js`).
+ * 판독([parseRow])과 **같은 규칙으로 읽어야** 한다 — 다르게 읽으면 자동 클릭이
+ * 엉뚱한 편성을 잡는다. 주키는 열차 번호다. (§38-4)
+ */
+export function rowIdentity(row) {
+  const heading = parseHeading(dom.firstText(row, KSEL.ROUTE_HEADING));
+  return {
+    trainNumber: dom.firstText(row, KSEL.TRAIN_NUMBER),
+    departureTime: heading.depTime,
   };
 }
 

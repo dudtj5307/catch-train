@@ -21,8 +21,8 @@ export class AbortError extends Error {
 /**
  * [ms] 만큼 기다린다. [signal] 이 끊기면 곧바로 [AbortError] 로 깨어난다.
  *
- * `chrome.alarms` 를 쓰지 않는 이유는 최소 30초이기 때문이다. 기본 간격이
- * 0.1~0.3초인 제품에서 주 타이머가 될 수 없다. (alarms 는 부활 그물로만 쓴다 — §E-3-2)
+ * `chrome.alarms` 를 쓰지 않는 이유는 최소 30초이기 때문이다. 간격을 최대(3초)로 잡아도
+ * 주 타이머가 될 수 없다. (alarms 는 부활 그물로만 쓴다 — §E-3-2)
  */
 export function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -49,14 +49,31 @@ export const MIN_INTERVAL_MS = 0;
 export const MAX_INTERVAL_MS = 3_000;
 
 /**
- * 처음 켰을 때의 간격. 취소표는 나오자마자 사라지므로 짧게 잡는다.
- * 짧은 간격을 오래 유지하면 차단 위험이 커진다 (대원칙 2).
+ * 처음 켰을 때의 간격.
+ *
+ * **안드로이드와 다르다(그쪽은 0.1~0.3초).** 확장도 한동안 그 값을 그대로 물려받고
+ * 있었는데, 그 숫자는 **갱신이 가벼운 AJAX 재조회이던 SRT 시절의 것**이다. KTX 전환에서
+ * 갱신이 새로고침(F5)이 되면서 요청 하나의 무게가 통째로 달라졌다 (§38-9, 대원칙 1).
+ *
+ * 실측 로그(2026-08-30, 조회 결과 10편성)에서 한 사이클이 **약 1.3초**였다 —
+ * 그중 [TYPICAL_CYCLE_OVERHEAD_MS] 가 새로고침 자체다. 즉 **여기서 0.2초를 더 자도
+ * 분당 요청 수는 거의 안 바뀐다.** 실제로 물러서려면 상한(3초) 쪽으로 가야 한다.
+ * 그래서 팝업이 간격이 아니라 **분당 요청 수**를 보여 준다 ([formatRate]).
  */
-export const DEFAULT_MIN_INTERVAL_MS = 100;
-export const DEFAULT_MAX_INTERVAL_MS = 300;
+export const DEFAULT_MIN_INTERVAL_MS = 300;
+export const DEFAULT_MAX_INTERVAL_MS = 500;
 
 /** 슬라이더가 스냅되는 단위(0.1초). */
 export const INTERVAL_STEP_MS = 100;
+
+/**
+ * 한 사이클에서 **대기를 뺀 나머지**에 걸리는 시간. 새로고침 + 번들 + 조회 API 다.
+ *
+ * 실측값이다(위 로그: `RESEARCH_TRIGGERED` → `PAGE_UPDATED` 가 약 1초). 정확할 필요는
+ * 없다 — 이 상수가 하는 일은 **"대기 시간 = 요청 간격" 이라는 착각을 깨는 것**뿐이다.
+ * 대기를 0 으로 해도 분당 60회를 넘지 못하고, 대기를 두 배로 해도 절반이 되지 않는다.
+ */
+export const TYPICAL_CYCLE_OVERHEAD_MS = 1_000;
 
 export function clampInterval(ms) {
   const value = Number.isFinite(ms) ? ms : DEFAULT_MIN_INTERVAL_MS;
@@ -70,11 +87,31 @@ export function clampRange(minMs, maxMs) {
   return [lo, hi];
 }
 
-/** "0.1~0.3초" */
+/** "0.3~0.5초" */
 export function formatRange(minMs, maxMs) {
   const [lo, hi] = clampRange(minMs, maxMs);
   const s = (ms) => (ms / 1000).toFixed(1);
   return lo === hi ? `${s(lo)}초` : `${s(lo)}~${s(hi)}초`;
+}
+
+/**
+ * 이 간격이면 **사이트로 분당 몇 번 나가는가.** 새로고침 비용을 포함한 값이다.
+ *
+ * 사용자에게 보여 줘야 하는 숫자가 이것이다. 간격만 보면 "0.3초니까 분당 200번" 처럼
+ * 읽히지만 실제로는 40번대이고, 거꾸로 "0.2초 늘렸으니 절반이 됐겠지" 도 틀린다.
+ * 차단을 부르는 것은 간격이 아니라 **분당 요청 수**다 (대원칙 2).
+ *
+ * 평균 대기((lo+hi)/2)로 센다. 사이클마다 무작위라 긴 눈으로 보면 평균으로 수렴한다.
+ */
+export function requestsPerMinute(minMs, maxMs, overheadMs = TYPICAL_CYCLE_OVERHEAD_MS) {
+  const [lo, hi] = clampRange(minMs, maxMs);
+  const cycleMs = overheadMs + (lo + hi) / 2;
+  return Math.round(60_000 / cycleMs);
+}
+
+/** "분당 약 42회" */
+export function formatRate(minMs, maxMs, overheadMs = TYPICAL_CYCLE_OVERHEAD_MS) {
+  return `분당 약 ${requestsPerMinute(minMs, maxMs, overheadMs)}회`;
 }
 
 /**

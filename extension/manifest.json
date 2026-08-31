@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Catch Train",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "코레일(KTX) 조회 결과에서 체크해 둔 칸이 열리면 알리고 [예매] 까지 눌러 준다.",
 
   "permissions": ["storage", "notifications", "alarms"],

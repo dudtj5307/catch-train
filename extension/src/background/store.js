@@ -10,13 +10,21 @@
 //
 // 상태는 service worker 만 갖는다. content script 가 읽을 일이 없으므로
 // `setAccessLevel` 도 필요 없다. (§E-8)
+//
+// **예외가 하나 있다 — 설정은 `storage.local` 이다.** 감시 간격은 감시 상태가 아니라
+// 사용자가 고른 **설정**이라, 브라우저를 닫았다 열면 되돌아가면 안 된다. 대원칙 4 가
+// 저장을 금지한 것은 **조회 조건과 체크한 칸**이지 설정이 아니다 (안드로이드도 설정에
+// 저장한다). 여기 들어가는 것은 숫자 둘뿐이고, 조회 조건은 여전히 아무 데도 저장하지
+// 않는다.
 
 import { EMPTY_SELECTION, normalizeSelection } from '../domain/watch-selection.js';
 import { normalizeConfig } from './watch-config.js';
+import { clampRange, DEFAULT_MAX_INTERVAL_MS, DEFAULT_MIN_INTERVAL_MS } from './scheduler.js';
 
 const SELECTION_KEY = 'selection';
 const WATCH_KEY = 'watch';
 const LOG_KEY = 'log';
+const SETTINGS_KEY = 'settings';
 
 /**
  * 선택은 **탭 하나에 대해서만** 들고 있다.
@@ -63,6 +71,14 @@ export async function loadWatch() {
     running: record.running === true,
     config: normalizeConfig(record.config),
     status: record.status ?? null,
+    /**
+     * ★ **[예매] 를 누르는 중이었나.** (§E-3-2 3번)
+     *
+     * 이 값이 남아 있다는 것은 되돌릴 수 없는 클릭 도중에 service worker 가 죽었다는
+     * 뜻이다. **눌렀는지 아닌지 우리는 모른다.** 부활은 감시를 이어가지 않고
+     * 그 자리에서 인계로 확정한다 — 모르는 채로 한 번 더 누르는 것이 가장 나쁘다.
+     */
+    reserving: record.reserving ?? null,
   };
 }
 
@@ -92,4 +108,38 @@ export async function saveLog(entries) {
 
 export async function clearLog() {
   await chrome.storage.session.remove(LOG_KEY);
+}
+
+/**
+ * 사용자가 고른 설정. **`storage.local` 이라 브라우저를 닫아도 남는다.**
+ *
+ * 저장에 실패하거나 값이 이상하면 기본값으로 떨어진다 — 설정을 못 읽었다고 감시가
+ * 시작되지 않는 편이 더 나쁘다 (대원칙 6).
+ *
+ * **예매를 누를지 말지는 여기 없다.** 그것은 설정이 아니라 이 도구가 하는 일이다
+ * (`watch-config.js` 머리말).
+ */
+export async function loadSettings() {
+  let record = null;
+  try {
+    const stored = await chrome.storage.local.get(SETTINGS_KEY);
+    record = stored[SETTINGS_KEY];
+  } catch {
+    // 저장소를 못 읽었다. 기본값으로 간다.
+  }
+  const [minIntervalMs, maxIntervalMs] = clampRange(
+    record && Number.isFinite(record.minIntervalMs) ? record.minIntervalMs : DEFAULT_MIN_INTERVAL_MS,
+    record && Number.isFinite(record.maxIntervalMs) ? record.maxIntervalMs : DEFAULT_MAX_INTERVAL_MS,
+  );
+  return { minIntervalMs, maxIntervalMs };
+}
+
+/** 넘기지 않은 항목은 **저장된 값 그대로 둔다.** 하나를 만졌다고 나머지가 되돌아가면 안 된다. */
+export async function saveSettings(patch) {
+  const current = await loadSettings();
+  const next = { ...current, ...patch };
+  const [lo, hi] = clampRange(next.minIntervalMs, next.maxIntervalMs);
+  const settings = { minIntervalMs: lo, maxIntervalMs: hi };
+  await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
+  return settings;
 }

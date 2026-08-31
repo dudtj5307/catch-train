@@ -22,6 +22,15 @@
 
 * { box-sizing: border-box; }
 
+/*
+  이 팝업은 보이고 숨기는 것을 전부 `hidden` 속성으로 한다. 그런데 `hidden` 은
+  브라우저 기본 스타일시트의 `display:none` 일 뿐이라, 클래스에 `display` 를 하나라도
+  쓰면 **조용히 무력화된다.** (`.login-cta { display:block }` 에서 실제로 그랬다 —
+  로그인한 뒤에도 [로그인 화면 열기] 가 남아 있었다)
+  선언 한 줄로 못을 박아 둔다.
+*/
+[hidden] { display: none !important; }
+
 body {
   width: 380px;
   margin: 0;
@@ -104,6 +113,125 @@ h1 {
 
 .primary:disabled { opacity: 0.6; cursor: default; }
 
+/*
+  비로그인일 때만 나타난다. 그때는 [감시 시작] 이 잠겨 있으므로 **이것이 화면에서
+  누를 수 있는 유일한 버튼**이다. 링크처럼 보이면 안 된다.
+*/
+.login-cta {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.login-cta:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+/*
+  감시 간격. **`.rate`(분당 약 N회)가 주인공이다** — 접힌 상태에서도 그것만은 보인다.
+  높으면 경고색으로 바뀐다 (`.rate.bad`).
+*/
+.interval {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.interval > summary {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  /* 기본 삼각형(▸)을 지우고 아래 `.chev` 를 쓴다. `::marker` 만으로는 사파리/구
+     크로뮴에서 남는 경우가 있어 `::-webkit-details-marker` 도 함께 지운다. */
+  list-style: none;
+}
+
+.interval > summary::-webkit-details-marker { display: none; }
+.interval > summary:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+
+/*
+  꺾쇠. 문자(∨/⌄)는 폰트마다 크기와 위치가 제각각이라 테두리로 직접 그린다.
+  접힘 = 아래쪽(∨), 펼침 = 위쪽(∧). **여는 방향과 화살표가 같은 쪽을 봐야 한다.**
+*/
+.interval .chev {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.interval[open] .chev { transform: translateY(1px) rotate(-135deg); }
+
+.interval-label { color: var(--muted); }
+
+/* 지금 값. 접힌 줄에서 읽는 것이라 본문색으로 또렷하게. */
+.interval-value {
+  color: var(--fg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.interval .rate { margin-left: auto; font-variant-numeric: tabular-nums; }
+.interval .rate.bad { color: var(--warn); font-weight: 600; }
+
+.slider {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.slider input[type="range"] { flex: 1; min-width: 0; }
+.slider output { width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+
+.presets {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+/* 두 줄이다 — 위가 간격, 아래가 **그래서 분당 몇 번인가.** 아래가 고르는 근거다. */
+.preset {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 2px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.preset:hover { border-color: var(--accent); }
+.preset .preset-range { color: var(--fg); font-size: 11px; }
+.preset .preset-rate { font-variant-numeric: tabular-nums; opacity: 0.85; }
+
+.preset.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+
+.preset.on .preset-range { color: var(--accent); font-weight: 600; }
+
 .watch-message {
   margin: 6px 0 0;
   color: var(--muted);
@@ -119,6 +247,16 @@ h1 {
   gap: 4px;
   margin-top: 6px;
 }
+
+/*
+  [클릭 진단]. 이 팝업에서 **페이지를 실제로 누르는 유일한 버튼**이라 나머지 링크와
+  같은 색이면 안 된다. 확인 대기 상태(`.arm`)에서는 경고색으로 바뀐다.
+*/
+.probe { margin-left: auto; }
+.probe.arm { color: var(--warn); font-weight: 600; }
+
+/* 진단 결과는 로그보다 길다. 접히지 않고 그대로 읽혀야 한다. */
+.probe-result { max-height: 220px; }
 
 /* 로그는 진단용이다. 대기 중이었는지 아닌지가 여기서만 갈린다. (§39-7) */
 .log {
@@ -199,8 +337,6 @@ footer { margin-top: 10px; }
   color: var(--muted);
   font-size: 11px;
 }
-
-.stage { opacity: 0.85; }
 
 .warnings {
   margin: 6px 0 0;

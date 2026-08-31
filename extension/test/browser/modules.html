@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ko">
+  <head><meta charset="utf-8" /><title>syntax check</title></head>
+  <body>
+    <pre id="out">RUNNING</pre>
+    <div id="host"></div>
+    <script>
+      // chrome API shim — 문법/임포트 검사만 한다. 아무것도 실제로 하지 않는다.
+      const noop = () => {};
+      const listener = { addListener: noop, removeListener: noop };
+      window.chrome = {
+        runtime: {
+          getURL: (p) => '/' + p,
+          onMessage: listener,
+          onInstalled: listener,
+          onStartup: listener,
+          sendMessage: async () => ({ ok: false, reason: 'SHIM' }),
+          lastError: null,
+        },
+        storage: {
+          session: { get: async () => ({}), set: async () => {}, remove: async () => {} },
+          local: { get: async () => ({}), set: async () => {}, remove: async () => {} },
+        },
+        tabs: {
+          onUpdated: listener, onRemoved: listener, onReplaced: listener, onActivated: listener,
+          query: async () => [], get: async () => null, sendMessage: async () => null,
+          reload: async () => {}, goBack: async () => {}, create: async () => ({ id: 1 }),
+          update: async () => {}, getZoom: async () => 1,
+        },
+        notifications: { create: noop, clear: noop, onClicked: listener },
+        alarms: { create: async () => {}, clear: async () => {}, onAlarm: listener },
+        windows: { update: async () => {} },
+        action: { setBadgeText: noop, setTitle: noop },
+      };
+    </script>
+    <script type="module">
+      const out = document.getElementById('out');
+      const lines = [];
+
+      const MODULES = [
+        'src/domain/seat-class.js',
+        'src/domain/seat-status.js',
+        'src/domain/train.js',
+        'src/domain/train-key.js',
+        'src/domain/match.js',
+        'src/domain/page-snapshot.js',
+        'src/domain/selection-engine.js',
+        'src/domain/watch-selection.js',
+        'src/content/ktx/selectors.js',
+        'src/content/ktx/dom.js',
+        'src/content/ktx/tap.js',
+        'src/content/ktx/parse.js',
+        'src/content/ktx/page-kind.js',
+        'src/content/ktx/login.js',
+        'src/content/ktx/query.js',
+        'src/content/ktx/probe.js',
+        'src/content/ktx/reserve.js',
+        'src/content/index.js',
+        'src/background/logger.js',
+        'src/background/scheduler.js',
+        'src/background/watch-config.js',
+        'src/background/watch-state.js',
+        'src/background/store.js',
+        'src/background/notifier.js',
+        'src/background/page-host.js',
+        'src/background/watch-controller.js',
+        'src/background/index.js',
+      ];
+
+      const loaded = {};
+      for (const path of MODULES) {
+        try {
+          loaded[path] = await import('/' + path);
+          lines.push('OK   ' + path);
+        } catch (e) {
+          lines.push('FAIL ' + path + ' :: ' + (e && (e.stack || e.message) || e));
+        }
+      }
+
+      // 팝업은 DOM 이 있어야 뜬다. popup.html 의 body 를 그대로 붙이고 불러온다.
+      try {
+        const html = await (await fetch('/src/ui/popup.html')).text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        document.getElementById('host').innerHTML = doc.body.innerHTML;
+        await import('/src/ui/popup.js');
+        lines.push('OK   src/ui/popup.js');
+      } catch (e) {
+        lines.push('FAIL src/ui/popup.js :: ' + (e && (e.stack || e.message) || e));
+      }
+
+      // 실제로 한 번 굴려 보는 최소 확인 (DOM 없이 되는 것만).
+      try {
+        const dom = loaded['src/content/ktx/dom.js'];
+        const { SeatClass } = loaded['src/domain/seat-class.js'];
+        const idx = dom.seatCellIndexes([]);
+        lines.push('CHK  seatCellIndexes([]) = ' + JSON.stringify(idx));
+        lines.push('CHK  activeCellCount() = ' + dom.activeCellCount());
+        const ws = loaded['src/background/watch-state.js'];
+        lines.push('CHK  WatchState.RESERVED = ' + ws.WatchState.RESERVED +
+          ' / label=' + ws.watchStateLabel(ws.WatchState.SEAT_SELECTED) +
+          ' / result=' + ws.reserveResultLabel(ws.ReserveResult.NOT_ALLOWED));
+        const cfg = loaded['src/background/watch-config.js'].DEFAULT_WATCH_CONFIG;
+        lines.push('CHK  confirmSettleMs=' + cfg.confirmSettleMs +
+          ' maxSoldOutRetries=' + cfg.maxSoldOutRetries);
+        const reserve = loaded['src/content/ktx/reserve.js'];
+        lines.push('CHK  reserveOutcome() = ' + JSON.stringify(reserve.reserveOutcome()));
+        const sel = await reserve.selectSeat({ trainNumber: '305', departureTime: '07:11', seatClass: SeatClass.GENERAL });
+        lines.push('CHK  selectSeat(빈 화면) = ' + sel.result + ' / ' + sel.detail);
+        const conf = reserve.confirmReserve({ seatClass: SeatClass.GENERAL });
+        lines.push('CHK  confirmReserve(빈 화면) = ' + conf.result + ' / ' + conf.detail);
+      } catch (e) {
+        lines.push('FAIL 동작확인 :: ' + (e && (e.stack || e.message) || e));
+      }
+
+      out.textContent = lines.join('\n');
+      document.title = lines.some((l) => l.startsWith('FAIL')) ? 'HAS-FAILURES' : 'ALL-OK';
+    </script>
+  </body>
+</html>

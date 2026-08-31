@@ -10,11 +10,21 @@
 // 그것은 새로고침마다 정상적으로 겪는 상태라 오류로 세지 않지만(§E-6-1),
 // 실제로는 여기 있었는데 못 받은 것이라면 감시가 헛돈다.
 //
-// **[SCROLL_TOP] 하나를 빼면 전부 읽기다.** 그마저도 스크롤 위치를 손대는 것이고,
-// 사이트로 나가는 요청은 여기서 하나도 만들지 않는다.
+// 판독 경로는 **[SCROLL_TOP] 하나를 빼면 전부 읽기다.** 그마저도 스크롤 위치를 손대는
+// 것이고, 사이트로 나가는 요청은 여기서 하나도 만들지 않는다.
+//
+// **페이지를 실제로 누르는 것은 아래 셋뿐이다.** 나머지는 전부 읽기다.
+//
+//  - [SELECT_SEAT]     1단계. 좌석 칸을 고른다. 되돌릴 수 있다 (§38-6)
+//  - [CONFIRM_RESERVE] 2단계. 하단 바의 [예매]. **되돌릴 수 없다** (대원칙 3 의 끝)
+//  - [CLICK_PROBE]     M-a 실측. 감시 루프는 부르지 않고 사용자가 팝업에서 두 번 눌러야 돈다
+//
+// 셋 다 **부를 때 비로소** 모듈을 불러온다. 판독만 하는 사이클에는 누르는 코드가
+// 아예 로드되지 않는다.
+
+const load = (path) => import(chrome.runtime.getURL(path));
 
 const ready = (async () => {
-  const load = (path) => import(chrome.runtime.getURL(path));
   const [parse, pageKind, login, query] = await Promise.all([
     load('src/content/ktx/parse.js'),
     load('src/content/ktx/page-kind.js'),
@@ -32,6 +42,30 @@ const ready = (async () => {
     QUERY_SIG: () => query.querySig(),
     /** 새로고침이 화면을 맨 밑으로 튕기는 것을 막는 세 자리 중 둘 (§38-9) */
     SCROLL_TOP: () => scrollTop(),
+    /**
+     * ★ **1단계 — 좌석 칸을 고른다.** (§38-6)
+     * 되돌릴 수 있는 동작이다. 눌러 보고 `active` 가 붙었는지 확인해서 돌려준다.
+     */
+    SELECT_SEAT: async (message) =>
+      (await load('src/content/ktx/reserve.js')).selectSeat(message),
+
+    /**
+     * ★ **2단계 — 하단 바의 [예매].** 되돌릴 수 없다. (대원칙 3)
+     * 누르고 **기다리지 않고** 곧바로 돌려준다 — 화면이 넘어가면 이 스크립트는 죽는다.
+     */
+    CONFIRM_RESERVE: async (message) =>
+      (await load('src/content/ktx/reserve.js')).confirmReserve(message),
+
+    /** 2단계 뒤의 화면. **읽기다.** service worker 가 되풀이해 읽어 결과를 판정한다 */
+    RESERVE_OUTCOME: async () =>
+      (await load('src/content/ktx/reserve.js')).reserveOutcome(),
+
+    /**
+     * ★ **클릭 실측(M-a) 한 번.** (PLAN.md §E-2-4)
+     * 감시 루프가 아니라 사용자가 팝업에서 부른다.
+     */
+    CLICK_PROBE: async (message) =>
+      (await load('src/content/ktx/probe.js')).clickProbe(message),
   };
 })();
 
@@ -45,12 +79,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: `알 수 없는 요청: ${type}` });
       return;
     }
-    try {
-      sendResponse({ ok: true, data: handler(message) });
-    } catch (e) {
+    // 판독은 전부 동기지만 [SELECT_SEAT] 와 [CLICK_PROBE] 는 누른 뒤 화면이 반응할
+    // 때까지 기다린다. 둘을 갈라 두면 언젠가 한쪽만 고치게 되므로 **한 경로로** 다룬다.
+    Promise.resolve()
+      .then(() => handler(message))
+      .then((data) => sendResponse({ ok: true, data }))
       // 판독이 깨져도 페이지에는 아무 일도 일어나지 않는다. 이유만 올려보낸다.
-      sendResponse({ ok: false, error: (e && e.message) || 'DOM 판독 실패' });
-    }
+      .catch((e) => sendResponse({ ok: false, error: (e && e.message) || 'DOM 판독 실패' }));
   }).catch((e) => {
     sendResponse({ ok: false, error: `판독 모듈을 불러오지 못했습니다: ${(e && e.message) || e}` });
   });

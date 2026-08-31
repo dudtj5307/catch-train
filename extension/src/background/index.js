@@ -7,8 +7,11 @@
 //   3. `chrome.alarms` **부활 그물** (주 타이머가 아니다 — §E-3-2)
 //   4. 상태·로그를 `chrome.storage.session` 에 흘려 두기 (SW 가 죽어도 이어가려고)
 //
-// **M2 부터 사이트로 요청이 나간다.** 나가는 것은 새로고침 하나뿐이고, 그 자리는
-// `page-host.js` 의 `requery` 한 곳이다. 대원칙 2 를 어기는 코드는 거기서만 쓸 수 있다.
+// **M2 부터 사이트로 요청이 나간다.** 감시가 내보내는 것은 새로고침 하나뿐이고, 그
+// 자리는 `page-host.js` 의 `requery` 한 곳이다. 대원칙 2 를 어기는 코드는 거기서만 쓸 수 있다.
+//
+// 감시 밖에 하나 더 있다 — [clickProbe](M-a 실측). **사용자가 팝업에서 두 번 눌러야만**
+// 돌고, 감시 중에는 아예 거절한다. 확장이 페이지를 누르는 것은 지금 그 자리뿐이다.
 
 import { snapshotFromRaw, DomParseError } from '../domain/page-snapshot.js';
 import { selectionRetainOnly, selectionToggle, selectionIsEmpty } from '../domain/watch-selection.js';
@@ -26,9 +29,11 @@ import {
   clearWatch,
   loadLog,
   loadSelection,
+  loadSettings,
   loadWatch,
   saveLog,
   saveSelection,
+  saveSettings,
   saveWatch,
 } from './store.js';
 
@@ -53,6 +58,8 @@ const controller = new WatchController({
   onStatus: () => schedulePersist(),
   // 조회 조건이 바뀌면 체크해 둔 칸은 다른 화면의 것이다. 버린다. (§E-6-3 예외 17)
   onSelectionInvalid: () => { clearSelection().catch(() => {}); },
+  // **[예매] 를 누르기 직전/직후.** 이 사이에 SW 가 죽으면 부활이 또 누르면 안 된다.
+  onReserving: (mark) => markReserving(mark),
 });
 
 /** 팝업이 보내는 요청. content script 로 가는 이름(`PARSE` 등)과 섞이지 않게 나눠 둔다. */
@@ -65,11 +72,33 @@ const handlers = {
   GET_STATUS: getStatus,
   OPEN_LOGIN: openLogin,
   CLEAR_LOG: clearLogEntries,
+  CLICK_PROBE: clickProbe,
+  GET_SETTINGS: getSettings,
+  SET_INTERVAL: updateInterval,
 };
 
+/**
+ * 이 빌드가 어디까지 하는가. **버전 번호만으로는 부족하다** — 개발 중에는 버전을
+ * 올리지 않은 채 코드만 바뀌는 일이 흔하고, 정작 알고 싶은 것은 "이 빌드가 예매를
+ * 누르는 코드를 갖고 있는가" 이기 때문이다. 마일스톤이 올라가면 여기도 같이 올린다.
+ */
+const BUILD_MARK = 'M4 (좌석 선택 + [예매])';
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const handler = handlers[message && message.type];
-  if (!handler) return false;
+  const type = message && message.type;
+  const handler = handlers[type];
+  // **모르는 요청에 침묵하지 않는다.** `return false` 로 두면 응답 채널이 그냥 닫히고
+  // 팝업의 `sendMessage` 가 `undefined` 로 풀린다. 팝업에서는 그것이 "눌러도 아무 반응
+  // 없음" 으로만 보인다 — 잠긴 버튼에 이유를 붙이는 것과 같은 이유로 여기도 말을 해야 한다.
+  //
+  // 이 자리에 실제로 오는 것은 거의 하나뿐이다: **낡은 service worker 가 새 팝업의
+  // 요청을 받은 경우.** 팝업 HTML/JS 는 열 때마다 디스크에서 새로 읽히지만 service
+  // worker 와 content script 는 확장을 다시 불러와야 갱신되기 때문에, 개발 중에는
+  // "팝업에는 새 버튼이 있는데 그 버튼이 부르는 핸들러는 없는" 상태가 흔하다.
+  if (!handler) {
+    sendResponse({ ok: false, reason: 'UNKNOWN_TYPE', error: `알 수 없는 요청: ${type}` });
+    return false;
+  }
   handler(message)
     .then(sendResponse)
     .catch((e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
@@ -187,6 +216,9 @@ async function clearAll() {
  *    끼우지는 않는다. (§E-6-5)
  */
 async function startWatch(message) {
+  // ★ **로그가 스스로 어느 빌드인지 말하게 한다.** 맨 앞에 둔다 — 탭을 잘못 골랐거나
+  // 로그인이 아니어서 되돌아가는 경로에서도 이 줄은 남아야 한다.
+  logger.log(LogCode.BUILD, `v${chrome.runtime.getManifest().version} ${BUILD_MARK}`);
   const tab = await targetTab();
   if (!tab) return { ok: false, reason: 'NOT_KORAIL' };
 
@@ -204,10 +236,19 @@ async function startWatch(message) {
     return { ok: false, reason: 'LOGGED_OUT', detail: login.detail };
   }
 
-  const config = normalizeConfig({ ...DEFAULT_WATCH_CONFIG, ...(message.config ?? {}) });
+  // 간격은 **저장된 설정**이 정한다. 팝업이 보낸 값이 있으면 그것이 우선이다.
+  const settings = await loadSettings();
+  const config = normalizeConfig({
+    ...DEFAULT_WATCH_CONFIG,
+    ...settings,
+    ...(message.config ?? {}),
+  });
+  // 간격과 분당 요청 수는 `WATCH_START` 한 줄에 같이 남는다 (watch-controller.js).
   controller.start({ host, selection, config });
 
-  await saveWatch({ tabId: tab.id, running: true, config, status: controller.status });
+  await saveWatch({
+    tabId: tab.id, running: true, config, status: controller.status, reserving: null,
+  });
   await chrome.alarms.create(REVIVE_ALARM, { periodInMinutes: REVIVE_PERIOD_MINUTES });
 
   // 루프가 끝나면(발견·오류·중지) 그물을 걷는다. 감시하지 않는데 깨어날 이유가 없다.
@@ -247,10 +288,88 @@ async function openLogin() {
   return { ok: true, tabId: tab.id };
 }
 
+// ------------------------------------------------------------------ 설정
+
+/**
+ * 감시 간격. 팝업이 열릴 때마다 물어본다.
+ *
+ * 감시 중이면 **지금 돌고 있는 값**을 돌려준다. 저장된 값과 다를 수 있는데
+ * (시작한 뒤에 슬라이더를 움직였다면), 화면에는 실제로 나가고 있는 것이 보여야 한다.
+ */
+async function getSettings() {
+  const stored = await loadSettings();
+  const running = controller.isWatching ? controller.config : null;
+  return {
+    ok: true,
+    settings: running
+      ? { minIntervalMs: running.minIntervalMs, maxIntervalMs: running.maxIntervalMs }
+      : stored,
+    stored,
+    watching: controller.isWatching,
+  };
+}
+
+/**
+ * 간격을 바꾼다. **다음 감시부터 적용된다.**
+ *
+ * 돌고 있는 루프에 밀어 넣지 않는 이유는, 지금 사이클의 대기 시간은 이미 뽑혀 있고
+ * 중간에 갈아 끼우면 **요청이 한 번 더 나가는 재시작**이 되기 때문이다 (대원칙 2).
+ * 감시 중이면 팝업이 "다음 감시부터" 라고 말해 준다.
+ */
+async function updateInterval(message) {
+  const settings = await saveSettings({
+    minIntervalMs: message.minIntervalMs,
+    maxIntervalMs: message.maxIntervalMs,
+  });
+  return { ok: true, settings, appliesNow: !controller.isWatching };
+}
+
 async function clearLogEntries() {
   logger.clear();
   await clearLog();
   return { ok: true };
+}
+
+// ------------------------------------------------------------------ 실측 (M2.5)
+
+/**
+ * ★ **클릭 실측(M-a) 한 번.** (PLAN.md §E-2-4)
+ *
+ * 이 저장소에서 **확장이 페이지를 누르는 유일한 경로**다. 감시 루프는 부르지 않고
+ * 사용자가 팝업에서 두 번 눌러야만 여기 온다.
+ *
+ * 답을 얻으려는 질문은 하나뿐이다 — 합성 클릭이 이 사이트에 통하는가. 그 답이
+ * `ClickDriver` 기본값을 정하고, 그때 비로소 M3 을 시작할 수 있다. 추측으로 정하면
+ * 첫 실사용에서 좌석 하나를 날린다.
+ *
+ * **감시 중에는 하지 않는다.** 감시가 새로고침을 하는 사이에 좌석을 골라 두면
+ * 그다음 판정이 진단 때문에 흔들린다.
+ */
+async function clickProbe(message) {
+  if (controller.isWatching) return { ok: false, reason: 'WATCHING' };
+
+  const tab = await targetTab();
+  if (!tab) return { ok: false, reason: 'NOT_KORAIL' };
+
+  const res = await new TabPageHost(tab.id).send({ type: 'CLICK_PROBE', ...message });
+  if (!res.ok) {
+    logger.log(LogCode.CLICK_PROBE, `실패: ${res.error ?? res.reason ?? '알 수 없음'}`);
+    return { ok: false, reason: res.reason ?? 'PROBE_FAILED', error: res.error };
+  }
+
+  logger.log(LogCode.CLICK_PROBE, probeSummary(res.data));
+  await persistNow();
+  return { ok: true, probe: res.data };
+}
+
+/** 로그 한 줄. 자세한 것은 팝업이 펼쳐 보여 준다. */
+function probeSummary(probe) {
+  if (!probe.ran) return `누르지 않음 (${probe.reason})`;
+  const req = probe.requests && probe.requests.supported
+    ? `요청 ${probe.requests.entries.length}건`
+    : '요청 측정 불가';
+  return `${probe.verdict} trusted=${probe.event.trusted} ` +
+    `active ${probe.before.activeCount}→${probe.after.activeCount} ${req}`;
 }
 
 /** 루프가 끝난 뒤 정리. 감시하지 않는 동안 그물을 켜 두지 않는다. */
@@ -286,9 +405,45 @@ async function reviveIfNeeded() {
     return;
   }
 
+  // ★ **되돌릴 수 없는 클릭 도중에 죽었다.** (§E-3-2 3번)
+  //
+  // [예매] 가 실제로 나갔는지 우리는 모른다. 감시를 이어가면 다음 사이클에 같은 칸을
+  // 한 번 더 누를 수 있고, 그것이 이 확장이 저지를 수 있는 가장 나쁜 일이다.
+  // 그래서 **이어가지 않는다.** 좌석은 골라져 있을 테니 사람에게 넘긴다.
+  if (watch.reserving) {
+    const { trainNumber, departureTime, seatClass } = watch.reserving;
+    logger.log(
+      LogCode.RESERVE_HANDOVER,
+      `부활: [예매] 를 누르는 중에 끊겼습니다 (${trainNumber} ${departureTime} ${seatClass})`,
+    );
+    await saveWatch({ ...watch, running: false, reserving: null });
+    await chrome.alarms.clear(REVIVE_ALARM);
+    notifier.notifyReserve(
+      '예매 중에 확장이 잠시 멈췄습니다',
+      '코레일 화면을 직접 확인해 주세요. 눌렸는지 알 수 없어 다시 누르지 않습니다.',
+    );
+    await persistNow();
+    return;
+  }
+
   logger.log(LogCode.WATCH_RESUMED, 'service worker 가 다시 깨어남');
   controller.start({ host, selection, config: watch.config });
   controller.finished().then(() => { afterLoopEnded().catch(() => {}); });
+}
+
+/**
+ * [예매] 클릭 표시를 **곧바로** 저장한다. 디바운스를 태우지 않는다 —
+ * 이 값이 늦게 쓰이면 있으나 마나다. (§E-3-2 3번)
+ */
+async function markReserving(mark) {
+  const watch = await loadWatch();
+  if (!watch) return;
+  await saveWatch({
+    ...watch,
+    running: controller.isWatching,
+    status: controller.status,
+    reserving: mark,
+  });
 }
 
 /**

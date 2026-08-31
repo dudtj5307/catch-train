@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ko">
+  <head><meta charset="utf-8" /><title>fixture check</title></head>
+  <body>
+    <!-- 코레일 조회 결과 화면의 최소 모형. selectors.js 가 찾는 구조 그대로. -->
+    <div class="tckWrap">
+      <ul>
+        <li class="tckList">
+          <div class="tit_box"><span class="flag_wrap"><span class="blind">KTX-산천</span><span class="num">305</span></span></div>
+          <div class="data_box"><h3>동탄 → 김천구미 (07:11 ~ 08:17)</h3></div>
+          <div class="tck_inner">
+            <div class="price_box fl-l gen"><div class="inner"><a href="#none">일반실 25,700원</a></div></div>
+            <div class="price_box fl-r sold_out"><div class="inner"><a href="#none">특실 매진</a></div></div>
+          </div>
+        </li>
+        <li class="tckList">
+          <div class="tit_box"><span class="flag_wrap"><span class="blind">KTX</span><span class="num">381</span></span></div>
+          <div class="data_box"><h3>동탄 → 김천구미 (07:11 ~ 08:20)</h3></div>
+          <div class="tck_inner">
+            <div class="price_box fl-l sold_out"><div class="inner"><a href="#none">일반실 매진</a></div></div>
+            <div class="price_box fl-r spe"><div class="inner"><a href="#none">특실 37,200원</a></div></div>
+          </div>
+        </li>
+        <!--
+          ★ **매진임박 편성.** 두 칸 다 `sold_out_soon` 이라 `gen`/`spe` 가 **하나도 없다** —
+          등급을 위치로만 가려야 하고(§38-3), 문구에는 "매진" 이 들어 있지만 **살 수 있는 칸**이다
+          (§38-2). 목록 맨 뒤에 둔다: 앞의 시나리오들이 쓰는 rowIndex 가 밀리면 안 된다.
+        -->
+        <li class="tckList">
+          <div class="tit_box"><span class="flag_wrap"><span class="blind">KTX</span><span class="num">411</span></span></div>
+          <div class="data_box"><h3>동탄 → 김천구미 (07:40 ~ 08:45)</h3></div>
+          <div class="tck_inner">
+            <div class="price_box fl-l sold_out_soon"><div class="inner"><a href="#none">일반실(매진임박) 25,700원</a></div></div>
+            <div class="price_box fl-r sold_out_soon"><div class="inner"><a href="#none">특실(매진임박) 37,200원</a></div></div>
+          </div>
+        </li>
+      </ul>
+    </div>
+
+    <!-- 2단계 바. 사이트에서는 1단계 뒤에 나타나지만, 여기서는 처음부터 두고 문구만 바꾼다. -->
+    <div class="ticket_reserv_wrap" id="bar" hidden>
+      <ul class="reserv_first"><li id="bar-label">일반실</li></ul>
+      <div class="reservbtnWrap">
+        <button class="reservbtn" id="btn-wait">예약대기신청</button>
+        <button class="reservbtn" id="btn-buy">예매</button>
+      </div>
+    </div>
+
+    <pre id="out">RUNNING</pre>
+
+    <script>
+      // **사이트 흉내.** 합성 클릭을 받아들이는 사이트로 두었다가, 두 번째 시나리오에서
+      // isTrusted 를 보고 무시하는 사이트로 바꾼다.
+      window.__acceptSynthetic = true;
+      window.__confirmClicks = [];
+
+      document.querySelectorAll('.price_box .inner a').forEach((a) => {
+        a.addEventListener('click', (e) => {
+          if (!window.__acceptSynthetic && !e.isTrusted) return;
+          const cell = a.closest('.price_box');
+          // **토큰 완전일치.** `sold_out_soon`(매진임박)은 `sold_out` 을 부분문자열로
+          // 갖지만 **살 수 있는 칸**이다. 부분일치로 두면 모형이 실제 사이트와
+          // 반대로 굴어서, 매진임박을 눌러도 아무 일이 없는 것처럼 보인다. (§38-2)
+          const tokens = cell.className.trim().split(/\s+/);
+          if (tokens.includes('sold_out') || tokens.includes('sold_out_wait')) return;
+          document.querySelectorAll('.price_box').forEach((c) => c.classList.remove('active'));
+          cell.classList.add('active');
+          // 등급 class 가 없는 칸(매진임박)은 **위치로** 가린다 — 사이트와 같은 규칙이다.
+          // 하단 바 문구는 **아직 실측 전이다**(§38-8). 여기서는 최악의 경우
+          // ("일반실(매진임박)" 처럼 등급 뒤에 꼬리가 붙는 경우)를 흉내 낸다.
+          const cells = Array.from(cell.closest('.tck_inner').querySelectorAll('.price_box'));
+          const grade = cells.indexOf(cell) === 1 ? '특실' : '일반실';
+          document.getElementById('bar-label').textContent =
+            grade + (tokens.includes('sold_out_soon') ? '(매진임박)' : '');
+          document.getElementById('bar').hidden = false;
+        });
+      });
+      document.getElementById('btn-buy').addEventListener('click', (e) => {
+        window.__confirmClicks.push('예매 trusted=' + e.isTrusted);
+      });
+      document.getElementById('btn-wait').addEventListener('click', () => {
+        window.__confirmClicks.push('예약대기신청');
+      });
+    </script>
+
+    <script type="module">
+      import * as reserve from '/src/content/ktx/reserve.js';
+      import * as dom from '/src/content/ktx/dom.js';
+      import { parse } from '/src/content/ktx/parse.js';
+      import { SeatClass } from '/src/domain/seat-class.js';
+
+      const lines = [];
+      const say = (label, value) => lines.push(label + ' :: ' + value);
+      const reset = () => {
+        document.querySelectorAll('.price_box').forEach((c) => c.classList.remove('active'));
+        document.getElementById('bar').hidden = true;
+        window.__confirmClicks = [];
+      };
+
+      // 0) 판독이 그대로인가 (기존 동작을 깨지 않았는지)
+      const snap = parse();
+      say('판독 status/편성수', snap.status + ' / ' + snap.trains.length);
+      say('305 일반실', snap.trains[0].generalSeatStatus + ' cell=' + snap.trains[0].generalCellIndex);
+      say('305 특실  ', snap.trains[0].firstClassSeatStatus + ' cell=' + snap.trains[0].firstClassCellIndex);
+      say('381 특실  ', snap.trains[1].firstClassSeatStatus + ' cell=' + snap.trains[1].firstClassCellIndex);
+      // 매진임박은 **예약가능**이고, 등급 class 가 없어도 위치로 가려져야 한다. (§38-2, §38-3)
+      say('411 일반실', snap.trains[2].generalSeatStatus + ' cell=' + snap.trains[2].generalCellIndex);
+      say('411 특실  ', snap.trains[2].firstClassSeatStatus + ' cell=' + snap.trains[2].firstClassCellIndex);
+
+      // 1) 통하는 사이트 — 1단계
+      reset();
+      let r = await reserve.selectSeat({ trainNumber: '305', departureTime: '07:11', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      say('1단계(통함)', r.result + ' | ' + r.detail);
+      say('  active 수', dom.activeCellCount() + ' / 이 칸=' + r.after.cellActive);
+
+      // 2) 2단계 — 허용목록 완전일치로 [예매] 만 눌러야 한다
+      let c = reserve.confirmReserve({ seatClass: SeatClass.GENERAL });
+      say('2단계', c.result + ' | ' + c.detail);
+      say('  실제로 눌린 것', JSON.stringify(window.__confirmClicks));
+
+      // 3) 등급이 어긋나면 누르지 않는다
+      reset();
+      await reserve.selectSeat({ trainNumber: '305', departureTime: '07:11', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      c = reserve.confirmReserve({ seatClass: SeatClass.FIRST_CLASS });
+      say('2단계(등급 불일치)', c.result + ' | ' + c.detail);
+      say('  실제로 눌린 것', JSON.stringify(window.__confirmClicks));
+
+      // 4) [예매] 가 없고 예약대기신청만 있으면 → 누르지 않고 인계
+      reset();
+      await reserve.selectSeat({ trainNumber: '305', departureTime: '07:11', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      const buy = document.getElementById('btn-buy');
+      buy.textContent = '입석+좌석 예매';
+      c = reserve.confirmReserve({ seatClass: SeatClass.GENERAL });
+      say('2단계(허용목록 밖)', c.result + ' | ' + c.detail);
+      say('  실제로 눌린 것', JSON.stringify(window.__confirmClicks));
+      buy.textContent = '예매';
+
+      // 5) 비활성 버튼은 누르지 않는다
+      reset();
+      await reserve.selectSeat({ trainNumber: '305', departureTime: '07:11', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      buy.classList.add('btn-disabled');
+      c = reserve.confirmReserve({ seatClass: SeatClass.GENERAL });
+      say('2단계(비활성)', c.result + ' | ' + c.detail);
+      buy.classList.remove('btn-disabled');
+
+      // 6) 매진 칸은 누르지 않는다
+      reset();
+      r = await reserve.selectSeat({ trainNumber: '305', departureTime: '07:11', seatClass: SeatClass.FIRST_CLASS, settleMs: 60 });
+      say('1단계(매진 칸)', r.result + ' | ' + r.detail + ' | clicked=' + r.clicked);
+
+      // 7) 없는 편성
+      reset();
+      r = await reserve.selectSeat({ trainNumber: '999', departureTime: '09:99', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      say('1단계(없는 편성)', r.result + ' | clicked=' + r.clicked);
+
+      // 8) 열차 번호가 주키인가 — 같은 07:11 의 다른 편성(381)을 잡으면 안 된다
+      reset();
+      r = await reserve.selectSeat({ trainNumber: '381', departureTime: '07:11', seatClass: SeatClass.FIRST_CLASS, settleMs: 60 });
+      say('1단계(381 특실)', r.result + ' | row=' + r.rowIndex + ' cell=' + r.cellIndex);
+
+      // 9) ★ 합성 클릭을 무시하는 사이트 — 여기서 인계로 떨어져야 한다
+      reset();
+      window.__acceptSynthetic = false;
+      r = await reserve.selectSeat({ trainNumber: '305', departureTime: '07:11', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      say('1단계(막는 사이트)', r.result + ' | ' + r.detail);
+      window.__acceptSynthetic = true;
+
+      // 10) 이미 골라져 있으면 다시 누르지 않는다 (누르면 선택이 풀린다)
+      reset();
+      await reserve.selectSeat({ trainNumber: '305', departureTime: '07:11', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      r = await reserve.selectSeat({ trainNumber: '305', departureTime: '07:11', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      say('1단계(이미 골라짐)', r.result + ' | clicked=' + r.clicked + ' | active=' + dom.activeCellCount());
+
+      // 11) ★ **매진임박 일반실을 고른다.** 등급 class 가 없어 위치로만 가려지는 칸이고,
+      //     문구에는 "매진" 이 들어 있다. 여기서 안 눌리면 실제 사이트에서
+      //     "자리가 있는데 아무것도 안 하는" 상태가 된다. (§38-2, §38-3)
+      reset();
+      r = await reserve.selectSeat({ trainNumber: '411', departureTime: '07:40', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      say('1단계(매진임박 일반실)', r.result + ' | row=' + r.rowIndex + ' cell=' + r.cellIndex + ' | ' + r.detail);
+
+      // 12) 그 상태의 2단계. 하단 바가 "일반실(매진임박)" 이어도 등급 확인을 통과해야 한다.
+      c = reserve.confirmReserve({ seatClass: SeatClass.GENERAL });
+      say('2단계(매진임박)', c.result + ' | ' + c.detail);
+      say('  실제로 눌린 것', JSON.stringify(window.__confirmClicks));
+
+      // 13) 꼬리가 붙어도 **다르게 읽힌 등급은 막는다.**
+      reset();
+      await reserve.selectSeat({ trainNumber: '411', departureTime: '07:40', seatClass: SeatClass.GENERAL, settleMs: 60 });
+      c = reserve.confirmReserve({ seatClass: SeatClass.FIRST_CLASS });
+      say('2단계(매진임박 등급 불일치)', c.result + ' | ' + c.detail);
+      say('  실제로 눌린 것', JSON.stringify(window.__confirmClicks));
+
+      // 14) 같은 편성의 특실(매진임박)도 위치로 가려야 한다 — 둘 다 등급 class 가 없다.
+      reset();
+      r = await reserve.selectSeat({ trainNumber: '411', departureTime: '07:40', seatClass: SeatClass.FIRST_CLASS, settleMs: 60 });
+      say('1단계(매진임박 특실)', r.result + ' | row=' + r.rowIndex + ' cell=' + r.cellIndex);
+
+      document.getElementById('out').textContent = lines.join('\n');
+      document.title = 'DONE';
+    </script>
+  </body>
+</html>

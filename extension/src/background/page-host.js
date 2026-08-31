@@ -13,6 +13,11 @@
 // 같은 조회를 스스로 되풀이한다.
 //
 // 새로고침 한 번은 **문서 + 번들 + 조회 API** 전체다. 간격을 좁히지 말 것. (대원칙 2)
+//
+// **누르는 것도 여기를 지난다.** [selectSeat](1단계) · [confirmReserve](2단계) ·
+// [watchReserveOutcome](2단계 뒤 관찰) · [goBack](되돌리기). 감시 루프는 이 넷만 알고,
+// 클릭이 실제로 어떻게 나가는지(합성이냐 디버거냐)는 content script 안쪽 사정이다.
+// 드라이버를 갈아 끼울 자리도 여기다. (PLAN.md §E-2-2)
 
 import { DomParseError, snapshotFromRaw } from '../domain/page-snapshot.js';
 import { AbortError, sleep } from './scheduler.js';
@@ -84,6 +89,115 @@ export class TabPageHost {
   async querySig() {
     const res = await this.send({ type: 'QUERY_SIG' });
     return res.ok ? { ok: true, sig: res.data.sig } : { ok: false };
+  }
+
+  // ------------------------------------------------------------ 예매 (M3)
+
+  /**
+   * **1단계 — 좌석 칸 고르기.** 되돌릴 수 있는 동작이다. (§38-6)
+   *
+   * content script 가 눌러 보고 `active` 가 붙었는지 확인한 결과를 그대로 돌려준다.
+   * 말을 걸지 못하면 `FAILED` 다 — 여기서 다시 걸지 않는다. 누르는 경로에서 재시도는
+   * "첫 클릭이 닿았는지 모르는 채로 또 누르는 것" 이다. (대원칙 2)
+   */
+  async selectSeat({ trainNumber, departureTime, seatClass, settleMs }) {
+    const res = await this.send({
+      type: 'SELECT_SEAT', trainNumber, departureTime, seatClass, settleMs,
+    });
+    if (!res.ok) {
+      return { result: 'FAILED', detail: res.error || res.reason || '좌석 칸을 누르지 못했습니다' };
+    }
+    return res.data;
+  }
+
+  /**
+   * **2단계 — 하단 바의 [예매].** 되돌릴 수 없다.
+   *
+   * content script 는 누르고 **기다리지 않고** 곧바로 답한다. 화면이 넘어가면 그
+   * 스크립트가 죽어 응답이 사라지기 때문이다. 결과는 [watchReserveOutcome] 이 본다.
+   */
+  async confirmReserve({ seatClass }) {
+    const res = await this.send({ type: 'CONFIRM_RESERVE', seatClass });
+    if (!res.ok) {
+      return { result: 'FAILED', detail: res.error || res.reason || '[예매] 를 누르지 못했습니다' };
+    }
+    return res.data;
+  }
+
+  /**
+   * **[예매] 를 누른 뒤 화면을 관찰한다.** 요청은 나가지 않는다 — 읽기뿐이다.
+   *
+   * 예산이 조회보다 넉넉한 이유가 있다. **대기열은 [예매] 를 누른 직후에 가장 잘 붙고**,
+   * 전환이 시작되었다는 것은 요청이 이미 나갔다는 뜻이다. 6초에서 포기하면 몇 시간
+   * 기다린 좌석을 대기창 앞에서 버린다. (§39-6)
+   *
+   * `NO_CONTENT_SCRIPT` 는 여기서 **화면이 넘어가는 중**이라는 신호다. 문서가 바뀌지
+   * 않으면 content script 는 죽지 않기 때문이다. 그래서 오류로 세지 않고, 끝내 돌아오지
+   * 않으면 "넘어갔다" 로 읽는다. (§E-6-1)
+   *
+   * @return `{ kind, detail, page }` — `kind` 는 판정이 아니라 **관찰 결과**다.
+   *   `SOLD_OUT` / `BLOCKED` / `NOTICE`(모르는 안내가 떴다) / `CLICKED` / `NO_CHANGE`
+   */
+  async watchReserveOutcome({ baseline, budgetMs, pollMs = 500, signal }) {
+    const startedAt = Date.now();
+    let last = null;
+    let gone = false;
+
+    for (;;) {
+      const res = await this.send({ type: 'RESERVE_OUTCOME' });
+      if (res.ok) {
+        const page = res.data;
+        last = page;
+        // 차단이 먼저다. 차단된 화면에서는 더 아무것도 하지 않는다.
+        if (page.blocked) return { kind: 'BLOCKED', detail: page.notice, page };
+        if (page.failed) return { kind: 'SOLD_OUT', detail: page.notice, page };
+        if (page.url !== baseline.url || (baseline.rows > 0 && page.rows === 0)) {
+          return { kind: 'CLICKED', detail: `화면 전환 ${baseline.url} → ${page.url}`, page };
+        }
+        // **모르는 안내가 떴다.** 성공인지 실패인지 우리는 모른다 — 코레일의 실제
+        // 실패 문구가 아직 실측 전이기 때문이다 (§38-8). 추측하지 않고 사람에게 넘기고,
+        // 문구를 로그에 남겨 다음 번에는 알아볼 수 있게 한다.
+        if (page.modal && !baseline.modal) {
+          return { kind: 'NOTICE', detail: page.notice, page };
+        }
+      } else if (res.reason === 'NO_CONTENT_SCRIPT') {
+        gone = true;
+      }
+
+      if (Date.now() - startedAt >= budgetMs) {
+        if (gone) {
+          return { kind: 'CLICKED', detail: '화면이 넘어가 페이지를 읽을 수 없습니다', page: last };
+        }
+        return { kind: 'NO_CHANGE', detail: '눌렀지만 화면이 바뀌지 않았습니다', page: last };
+      }
+
+      // 중지는 즉시 먹혀야 한다 (대원칙 7-c). [AbortError] 는 감시 루프까지 그대로 올린다.
+      await sleep(pollMs, signal);
+    }
+  }
+
+  /**
+   * **뒤로 가기.** (android: `WebView.goBack()`)
+   *
+   * 되돌리기는 이것뿐이다. 안내 화면의 [확인] 을 누르면 조회 폼이 새로 열려서
+   * 사용자가 넣어 둔 조회 조건이 통째로 초기화된다. 되돌리기 한 번이 감시 전체를
+   * 망친다. (대원칙 5)
+   *
+   * SPA 라 한 칸 뒤가 목록이라는 보장이 없어, **목록이 실제로 보이는지 확인한다.**
+   */
+  async goBack({ settleTimeoutMs, pollMs = 300, signal }) {
+    if (!(await this.isAlive())) return outcome('TAB_GONE', '탭이 사라졌습니다');
+    try {
+      await chrome.tabs.goBack(this.tabId);
+    } catch (e) {
+      return outcome('FAILED', `뒤로 가기 실패: ${(e && e.message) || e}`);
+    }
+    const settled = await this.#waitForList(settleTimeoutMs, pollMs, signal);
+    if (settled.list) {
+      await this.send({ type: 'SCROLL_TOP' });
+      return outcome('UPDATED', `목록 ${settled.rows}편성 sig=${settled.sig}`);
+    }
+    return outcome('SETTLED', '뒤로 갔지만 목록 화면이 아닙니다');
   }
 
   /**

@@ -9,6 +9,15 @@
 
 /** 로그 코드. 안드로이드 `LogCode` 중 **확장이 실제로 남기는 것만** 옮겼다. */
 export const LogCode = Object.freeze({
+  /**
+   * ★ **어느 빌드가 돌고 있는가.** 감시를 시작할 때마다 한 줄.
+   *
+   * 팝업 HTML/JS 는 열 때마다 디스크에서 새로 읽히지만 service worker 와 content
+   * script 는 **확장을 다시 불러와야** 갱신된다. 그래서 "팝업에는 새 버튼이 있는데
+   * 감시 루프는 낡은 것" 인 상태가 만들어지고, 화면에서는 그냥 "아무것도 안 눌린다"
+   * 로만 보인다. 이 줄이 없으면 그 빌드다.
+   */
+  BUILD: 'BUILD',
   WATCH_START: 'WATCH_START',
   WATCH_STOP: 'WATCH_STOP',
   WATCH_PAUSED: 'WATCH_PAUSED',
@@ -51,6 +60,55 @@ export const LogCode = Object.freeze({
   MATCH_DETAIL: 'MATCH_DETAIL',
   NOTIFICATION_SENT: 'NOTIFICATION_SENT',
   NOTIFICATION_SKIPPED: 'NOTIFICATION_SKIPPED',
+  // --- 자동 예매 (M3) ---------------------------------------------------
+  //
+  // **이 줄들이 보이면 확장이 페이지를 눌렀다는 뜻이다.** 감시의 나머지는 전부 읽기다.
+  // 한 번의 시도는 언제나 [RESERVE_START] 로 시작해서 아래 넷 중 하나로 끝난다 —
+  // [RESERVE_SUCCEEDED] / [RESERVE_HANDOVER] / [RESERVE_SOLD_OUT] / [RESERVE_FAILED].
+  // 끝나는 줄이 없으면 누르다 만 것이므로 거기부터 본다.
+
+  /** 자동 예매를 시작한다. detail 에 어떤 열차/좌석인지 남는다. */
+  RESERVE_START: 'RESERVE_START',
+
+  /** 1·2단계 요소를 실제로 눌렀다. **이 줄 = 클릭 한 번**이다. */
+  RESERVE_CLICKED: 'RESERVE_CLICKED',
+
+  /** **1단계** — 좌석 칸이 골라진 것을 확인했다. (§38-6) */
+  RESERVE_SEAT_SELECTED: 'RESERVE_SEAT_SELECTED',
+
+  /** **2단계** — [예매] 를 눌러 화면이 넘어갔다. 결제는 사용자가 한다. */
+  RESERVE_SUCCEEDED: 'RESERVE_SUCCEEDED',
+
+  /**
+   * **사람에게 넘겼다.** 좌석은 골라져 있다. (§38-6-1)
+   * 허용목록에 없는 버튼이거나, 누르기 전 확인이 어긋났거나, 누른 결과를 확신할 수 없다.
+   */
+  RESERVE_HANDOVER: 'RESERVE_HANDOVER',
+
+  /** 예매를 진행하지 못했다. (편성/칸을 특정 못 함, 클릭이 안 먹음, 오류) */
+  RESERVE_FAILED: 'RESERVE_FAILED',
+
+  /** 눌렀지만 "잔여석없음" 안내가 떴다. 그사이 다른 사람이 먼저 잡은 경우다. (§19-2) */
+  RESERVE_SOLD_OUT: 'RESERVE_SOLD_OUT',
+
+  /**
+   * ★ **2단계 뒤에 실제로 뜬 화면.** (§38-8 실측 자리)
+   *
+   * `RESERVE_FAILED_MARKERS` 는 아직 SRT 문구 그대로라 코레일에서 무엇이 뜨는지
+   * 우리는 모른다. 그래서 **판정하지 않고 문구를 그대로 남긴다** — 이 줄이 다음 번
+   * selector 수정의 근거다. 조회 조건이 섞이지 않게 안내 영역만, 200자까지.
+   */
+  RESERVE_NOTICE: 'RESERVE_NOTICE',
+
+  /** 예약 실패 안내에서 목록 화면으로 되돌아갔다. **뒤로 가기만 쓴다** (대원칙 5) */
+  RESERVE_DISMISSED: 'RESERVE_DISMISSED',
+
+  /** 목록 화면으로 되돌리지 못했다. 그 화면에서 더 누르지 않고 멈춘다. */
+  RESERVE_DISMISS_FAILED: 'RESERVE_DISMISS_FAILED',
+
+  /** 자동 예매를 하지 않고 넘어갔다. (이미 시도함 / 상한 초과) */
+  RESERVE_SKIPPED: 'RESERVE_SKIPPED',
+
   NEXT_RELOAD: 'NEXT_RELOAD',
   PAGE_STATUS: 'PAGE_STATUS',
   LOGIN_STATE: 'LOGIN_STATE',
@@ -71,6 +129,15 @@ export const LogCode = Object.freeze({
    * detail 에 남는 것은 **해시뿐이다.** 조회 조건 자체는 읽지도 쓰지도 않는다.
    */
   QUERY_CHANGED: 'QUERY_CHANGED',
+
+  /**
+   * ★ 확장 고유 — **클릭 실측(M-a)을 한 번 했다.** (PLAN.md §E-2-4)
+   *
+   * 감시 로그가 아니라 진단 기록이다. 이 줄이 있다는 것은 **확장이 페이지를 한 번
+   * 눌렀다**는 뜻이므로, 감시 로그를 읽을 때 이 줄이 섞여 있으면 그 시각의 화면 변화는
+   * 감시가 아니라 진단이 만든 것이다.
+   */
+  CLICK_PROBE: 'CLICK_PROBE',
 });
 
 /** 최근 [capacity] 건만 유지하는 로그 버퍼. */
